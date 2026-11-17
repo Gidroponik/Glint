@@ -1,0 +1,395 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1280, height=720" />
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.15.0/dist/gsap.min.js"></script>
+    <style>
+      @font-face { font-family: "Montserrat"; font-weight: 100; src: url("../assets/fonts/Montserrat-Thin.ttf"); }
+      @font-face { font-family: "Montserrat"; font-weight: 300; src: url("../assets/fonts/Montserrat-Light.ttf"); }
+      @font-face { font-family: "Montserrat"; font-weight: 400; src: url("../assets/fonts/Montserrat-Regular.ttf"); }
+      @font-face { font-family: "Montserrat"; font-weight: 600; src: url("../assets/fonts/Montserrat-SemiBold.ttf"); }
+      @font-face { font-family: "Montserrat"; font-weight: 700; src: url("../assets/fonts/Montserrat-Bold.ttf"); }
+      @font-face { font-family: "Montserrat"; font-weight: 900; src: url("../assets/fonts/Montserrat-Black.ttf"); }
+
+      :root {
+        --ground: #000;
+        --ink: #fff;
+        --muted: #8c8c8c;
+        --panel: #0a0a0a;
+        --line: #262626;
+        --glow: 0 0 14px rgba(255, 255, 255, 0.38);
+        --font: "Montserrat", sans-serif;
+      }
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 1280px; height: 720px; overflow: hidden; background: var(--ground); }
+      #root { position: relative; width: 1280px; height: 720px; font-family: var(--font); color: var(--ink); }
+      .clip { position: absolute; inset: 0; }
+      .center { display: flex; flex-direction: column; align-items: center; justify-content: center; }
+
+      /* logo: the same "leaf" tile as the app icon */
+      .leaf { border-radius: 36% 10% 36% 10%; background: #fff; box-shadow: var(--glow); position: relative; }
+      .leaf i { position: absolute; width: 20%; height: 20%; border: 0 solid #000; }
+      .leaf i:nth-child(1) { left: 25%; top: 25%; border-left-width: var(--bw); border-top-width: var(--bw); }
+      .leaf i:nth-child(2) { right: 25%; top: 25%; border-right-width: var(--bw); border-top-width: var(--bw); }
+      .leaf i:nth-child(3) { left: 25%; bottom: 25%; border-left-width: var(--bw); border-bottom-width: var(--bw); }
+      .leaf i:nth-child(4) { right: 25%; bottom: 25%; border-right-width: var(--bw); border-bottom-width: var(--bw); }
+
+      .wordmark { font-weight: 700; font-size: 84px; letter-spacing: -0.03em; }
+      .tagline { font-weight: 400; font-size: 22px; color: var(--muted); letter-spacing: 0.01em; }
+
+      /* stage: a stand-in "screen" being captured */
+      #screen { position: absolute; inset: 0; }
+      #taskbar { position: absolute; left: 0; right: 0; bottom: 0; height: 34px; background: rgba(8, 8, 12, 0.82); }
+      #taskbar b { position: absolute; top: 9px; width: 16px; height: 16px; border-radius: 4px; background: rgba(255, 255, 255, 0.28); }
+
+      #sel { position: absolute; left: 250px; top: 110px; width: 0; height: 0; border: 1.5px solid #fff;
+             box-shadow: 0 0 0 2000px rgba(0, 0, 0, 0.56); }
+      #sel .h { position: absolute; width: 9px; height: 9px; margin: -5px; border-radius: 50%; background: #fff; border: 1.5px solid #000; }
+      #sizelabel { position: absolute; left: 250px; top: 80px; height: 22px; padding: 0 8px; border-radius: 6px;
+                   background: rgba(10, 10, 10, 0.94); font: 600 12px/22px "Segoe UI", sans-serif; }
+      #ink { position: absolute; inset: 0; }
+      #ink path, #ink circle, #ink line { fill: none; stroke-linecap: round; stroke-linejoin: round; }
+
+      .panel { position: absolute; height: 46px; padding: 0 7px; display: flex; align-items: center; gap: 2px;
+               background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+               box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5); font-family: "Segoe UI", sans-serif; }
+      .panel .b { position: relative; width: 32px; height: 32px; flex: none; display: flex; align-items: center; justify-content: center; }
+      .panel svg { width: 17px; height: 17px; fill: none; stroke: #fff; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+      .panel .sep { width: 1px; height: 22px; margin: 0 6px; background: var(--line); flex: none; }
+      .panel .dot { width: 16px; height: 16px; border-radius: 50%; margin: 0 5px; flex: none; border: 1px solid rgba(255, 255, 255, 0.2); }
+      .hl { position: absolute; top: 6px; height: 32px; border-radius: 5px; background: #fff; box-shadow: var(--glow); }
+      .blend { mix-blend-mode: difference; display: flex; align-items: center; gap: 2px; }
+      #copybtn { margin-left: 4px; height: 32px; padding: 0 12px; display: flex; align-items: center; gap: 7px; border-radius: 8px;
+                 background: #fff; color: #000; font-weight: 600; font-size: 13px; box-shadow: var(--glow); }
+      #copybtn svg { stroke: #000; width: 15px; height: 15px; }
+      .w { width: 46px; height: 32px; flex: none; display: flex; align-items: center; justify-content: center;
+           font-family: var(--font); font-size: 17px; }
+      #outlinebtn { position: relative; height: 32px; padding: 0 11px; display: flex; align-items: center; font-weight: 600; font-size: 13px; }
+      #outlinebtn .hl { left: 0; top: 0; width: 100%; opacity: 0; }
+
+      #note { position: absolute; left: 318px; top: 356px; font-size: 70px; line-height: 1.3; white-space: nowrap; color: #fff; }
+      #note .layer { position: absolute; left: 0; top: 0; opacity: 0; }
+      #note .typed span { display: none; }
+      #caret { display: inline-block; width: 3px; height: 62px; margin-left: 3px; background: #fff; vertical-align: -10px; }
+      #stroke { -webkit-text-stroke: 12px #000; color: #000; }
+
+      .caption { position: absolute; left: 56px; top: 34px; display: flex; align-items: baseline; gap: 14px; opacity: 0; }
+      .caption em { font-style: normal; font-weight: 300; font-size: 18px; color: rgba(255, 255, 255, 0.6); }
+      .caption span { font-weight: 600; font-size: 26px; text-shadow: 0 2px 14px rgba(0, 0, 0, 0.8); }
+
+      .keys { position: absolute; left: 0; right: 0; bottom: 96px; display: flex; justify-content: center; gap: 10px; opacity: 0; }
+      .key { min-width: 62px; height: 58px; padding: 0 18px; display: flex; align-items: center; justify-content: center;
+             border-radius: 12px; background: #fff; color: #000; font-weight: 700; font-size: 22px; box-shadow: var(--glow); }
+
+      #cursor { position: absolute; left: 0; top: 0; width: 22px; height: 22px; opacity: 0; }
+      #flash { position: absolute; left: 250px; top: 110px; width: 780px; height: 400px; background: #fff; opacity: 0; }
+
+      #toast { position: absolute; right: 44px; bottom: 60px; width: 330px; padding: 14px 16px; display: flex; gap: 12px; align-items: center;
+               background: var(--panel); border: 1px solid var(--line); border-radius: 10px; opacity: 0;
+               box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5); font-family: "Segoe UI", sans-serif; }
+      #toast .leaf { width: 34px; height: 34px; flex: none; --bw: 3px; }
+      #toast p { font-size: 14px; font-weight: 600; }
+      #toast small { font-size: 12px; color: var(--muted); }
+      #formats { position: absolute; left: 0; right: 0; top: 566px; display: flex; justify-content: center; opacity: 0; }
+      #formats .seg { position: relative; display: flex; padding: 4px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line); }
+      #formats .f { width: 96px; height: 34px; display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 14px; }
+      #fmthl { left: 4px; top: 4px; width: 96px; height: 34px; }
+
+      .facts { display: flex; gap: 12px; margin-top: 26px; }
+      .fact { height: 38px; padding: 0 16px; display: flex; align-items: center; border: 1px solid var(--line); border-radius: 8px;
+              font-weight: 600; font-size: 15px; color: #d9d9d9; }
+    </style>
+  </head>
+  <body>
+    <div id="root" data-composition-id="main" data-start="0" data-duration="24" data-width="1280" data-height="720">
+      <!-- 1. intro -->
+      <div id="intro" class="clip center" data-start="0" data-duration="3.3" data-track-index="0">
+        <div id="intro-logo" class="leaf" style="width: 132px; height: 132px; --bw: 12px"><i></i><i></i><i></i><i></i></div>
+        <div id="intro-word" class="wordmark" style="margin-top: 26px">Glint</div>
+        <div id="intro-tag" class="tagline" style="margin-top: 6px">Screenshots, annotated.</div>
+      </div>
+
+      <!-- 2–5. the capture flow -->
+      <div id="stage" class="clip" data-start="3" data-duration="17.9" data-track-index="1">
+        <svg id="screen" viewBox="0 0 1280 720" preserveAspectRatio="none">
+          <defs>
+            <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#16203f" />
+              <stop offset="0.45" stop-color="#6b4a7a" />
+              <stop offset="0.7" stop-color="#f0a368" />
+              <stop offset="1" stop-color="#f7cf9a" />
+            </linearGradient>
+          </defs>
+          <rect width="1280" height="720" fill="url(#sky)" />
+          <circle cx="655" cy="398" r="92" fill="#ffe6bd" />
+          <path d="M0 470 L150 380 L290 455 L430 350 L600 470 L760 400 L930 470 L1090 372 L1280 455 L1280 720 L0 720 Z" fill="#4a3f6e" />
+          <path d="M0 540 L200 455 L380 530 L560 470 L760 545 L960 480 L1120 535 L1280 490 L1280 720 L0 720 Z" fill="#2a2648" />
+          <path d="M0 620 L240 560 L520 625 L800 575 L1040 630 L1280 590 L1280 720 L0 720 Z" fill="#131226" />
+        </svg>
+        <div id="taskbar"><b style="left: 600px"></b><b style="left: 628px"></b><b style="left: 656px"></b><b style="left: 684px"></b></div>
+
+        <div id="sel">
+          <div class="h" style="left: 0; top: 0"></div><div class="h" style="left: 50%; top: 0"></div>
+          <div class="h" style="left: 100%; top: 0"></div><div class="h" style="left: 100%; top: 50%"></div>
+          <div class="h" style="left: 100%; top: 100%"></div><div class="h" style="left: 50%; top: 100%"></div>
+          <div class="h" style="left: 0; top: 100%"></div><div class="h" style="left: 0; top: 50%"></div>
+        </div>
+        <div id="sizelabel" data-layout-ignore>0 × 0</div>
+
+        <svg id="ink" viewBox="0 0 1280 720">
+          <path id="circle-raw" stroke="#ff3b5c" stroke-width="5" />
+          <circle id="circle-fit" cx="372" cy="216" r="62" stroke="#ff3b5c" stroke-width="5" />
+          <path id="loops-raw" stroke="#30d158" stroke-width="5" />
+          <path id="loops-fit" stroke="#30d158" stroke-width="5" />
+          <line id="arrow-line" x1="968" y1="462" x2="826" y2="404" stroke="#0a84ff" stroke-width="5" />
+          <path id="arrow-head" d="M800 393 L836 388 L822 420 Z" style="fill: #0a84ff; stroke: none" />
+        </svg>
+
+        <div id="note" style="font-weight: 600" data-layout-allow-overlap data-layout-allow-overflow>
+          <span class="typed"><span>S</span><span>h</span><span>i</span><span>p</span><span>&nbsp;</span><span>i</span><span>t</span><span>.</span></span><span id="caret"></span>
+          <span id="stroke" class="layer" style="font-weight: 900" data-layout-ignore>Ship it.</span>
+          <span class="layer" id="w100" style="font-weight: 100" data-layout-ignore>Ship it.</span>
+          <span class="layer" id="w300" style="font-weight: 300" data-layout-ignore>Ship it.</span>
+          <span class="layer" id="w400" style="font-weight: 400" data-layout-ignore>Ship it.</span>
+          <span class="layer" id="w700" style="font-weight: 700" data-layout-ignore>Ship it.</span>
+          <span class="layer" id="w900" style="font-weight: 900">Ship it.</span>
+        </div>
+
+        <div id="flash"></div>
+
+        <!-- editor toolbar -->
+        <div id="toolbar" class="panel" style="left: 372px; top: 524px; opacity: 0" data-layout-ignore>
+          <div id="toolhl" class="hl" style="left: 7px; width: 32px"></div>
+          <div class="blend">
+            <div class="b"><svg viewBox="0 0 24 24"><path d="M5 3.5l13.5 7.2-5.6 1.7-2.2 5.6z" /></svg></div>
+            <div class="b"><svg viewBox="0 0 24 24"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z" /><path d="m15 5 4 4" /></svg></div>
+            <div class="b"><svg viewBox="0 0 24 24"><path d="m9 11-6 6v3h9l3-3" /><path d="m22 12-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4" /></svg></div>
+            <div class="b"><svg viewBox="0 0 24 24"><path d="M5 19 19 5" /></svg></div>
+            <div class="b"><svg viewBox="0 0 24 24"><path d="M8 6h10v10" /><path d="M6 18 18 6" /></svg></div>
+            <div class="b"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2" /></svg></div>
+            <div class="b"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /></svg></div>
+            <div class="b"><svg viewBox="0 0 24 24"><path d="M4 7V4h16v3" /><path d="M9 20h6" /><path d="M12 4v16" /></svg></div>
+          </div>
+          <div class="sep"></div>
+          <div class="dot" style="background: #ff3b5c"></div><div class="dot" style="background: #ff9f0a"></div>
+          <div class="dot" style="background: #30d158"></div><div class="dot" style="background: #0a84ff"></div>
+          <div class="dot" style="background: #fff"></div>
+          <div class="sep"></div>
+          <div class="b"><svg viewBox="0 0 24 24"><path d="M9 14 4 9l5-5" /><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11" /></svg></div>
+          <div class="b"><svg viewBox="0 0 24 24"><path d="M12 3v12" /><path d="m7 10 5 5 5-5" /><path d="M5 21h14" /></svg></div>
+          <div id="copybtn"><svg viewBox="0 0 24 24" fill="none" stroke-width="2"><rect x="8" y="8" width="13" height="13" rx="2" /><path d="M4 16V5a1 1 0 0 1 1-1h11" /></svg>Copy</div>
+        </div>
+
+        <!-- text panel: weights and outline -->
+        <div id="textpanel" class="panel" style="left: 506px; top: 576px; opacity: 0" data-layout-ignore>
+          <div style="padding: 0 8px; font-size: 12px; color: var(--muted)">Montserrat</div>
+          <div style="position: relative; display: flex">
+            <div id="weighthl" class="hl" style="left: 0; top: 0; width: 46px"></div>
+            <div class="blend" style="gap: 0">
+              <div class="w" style="font-weight: 100">Aa</div><div class="w" style="font-weight: 300">Aa</div>
+              <div class="w" style="font-weight: 400">Aa</div><div class="w" style="font-weight: 600">Aa</div>
+              <div class="w" style="font-weight: 700">Aa</div><div class="w" style="font-weight: 900">Aa</div>
+            </div>
+          </div>
+          <div class="sep"></div>
+          <div id="outlinebtn"><div class="hl"></div><span class="blend">Outline</span></div>
+        </div>
+
+        <div id="keys1" class="keys"><div class="key">Ctrl</div><div class="key">Shift</div><div class="key">S</div></div>
+        <div id="keys2" class="keys"><div class="key">Esc</div></div>
+
+        <div id="formats" data-layout-ignore>
+          <div class="seg">
+            <div id="fmthl" class="hl"></div>
+            <div class="blend" style="gap: 0"><div class="f">PNG</div><div class="f">PNG-8</div><div class="f">JPEG</div><div class="f">WebP</div></div>
+          </div>
+        </div>
+        <div id="toast" data-layout-ignore>
+          <div class="leaf"><i></i><i></i><i></i><i></i></div>
+          <div><p>Copied to clipboard</p><small>1170 × 600 · WebP</small></div>
+        </div>
+
+        <svg id="cursor" viewBox="0 0 24 24"><path d="M4 2l15 9-6.5 1.6L10 19z" fill="#fff" stroke="#000" stroke-width="1.5" stroke-linejoin="round" /></svg>
+      </div>
+
+      <!-- captions sit above the stage so the camera zoom does not move them -->
+      <div id="captions" class="clip" data-start="3" data-duration="17.9" data-track-index="3">
+        <div id="cap1" class="caption"><em>01</em><span>Freeze the screen, pick a region</span></div>
+        <div id="cap2" class="caption"><em>02</em><span>Draw — shaky strokes clean themselves up</span></div>
+        <div id="cap3" class="caption"><em>03</em><span>Type — six weights, outline for any background</span></div>
+        <div id="cap4" class="caption"><em>04</em><span>Esc — it is already in your clipboard</span></div>
+
+      </div>
+
+      <!-- 6. outro -->
+      <div id="outro" class="clip center" data-start="20.7" data-duration="3.3" data-track-index="2">
+        <div style="display: flex; align-items: center; gap: 22px">
+          <div id="outro-logo" class="leaf" style="width: 84px; height: 84px; --bw: 8px"><i></i><i></i><i></i><i></i></div>
+          <div id="outro-word" class="wordmark" style="font-size: 76px">Glint</div>
+        </div>
+        <div class="facts">
+          <div class="fact">Rust + GPUI</div><div class="fact">Windows</div><div class="fact">One small exe</div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      // deterministic pseudo-noise (no Math.random): the "shaky hand"
+      const noise = (i) => {
+        const v = Math.sin(i * 12.9898) * 43758.5453;
+        return (v - Math.floor(v)) * 2 - 1;
+      };
+      const toPath = (pts) => pts.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");
+
+      // hand-drawn circle and handwriting loops, plus their cleaned-up versions
+      const circleRaw = [];
+      for (let i = 0; i <= 72; i++) {
+        const t = (i / 72) * Math.PI * 2.06 + 0.4;
+        const r = 62 + 5 * noise(i) + 7 * Math.sin(3 * t + 1);
+        circleRaw.push([372 + r * 1.06 * Math.cos(t), 216 + r * 0.93 * Math.sin(t)]);
+      }
+      const loops = (shaky) => {
+        const pts = [];
+        for (let i = 0; i <= 220; i++) {
+          const t = i / 8.5;
+          const n = shaky ? 2.6 : 0;
+          pts.push([
+            650 + i * 1.32 + 21 * Math.sin(t) + n * noise(i),
+            212 - 27 * Math.cos(t) + n * noise(i + 400) + (shaky ? 5 * Math.sin(i / 23) : 0),
+          ]);
+        }
+        return pts;
+      };
+      document.getElementById("circle-raw").setAttribute("d", toPath(circleRaw));
+      document.getElementById("loops-raw").setAttribute("d", toPath(loops(true)));
+      document.getElementById("loops-fit").setAttribute("d", toPath(loops(false)));
+
+      // every stroke is "drawn" by revealing its dash
+      const pen = (id) => {
+        const el = document.getElementById(id);
+        const len = el.getTotalLength();
+        el.style.strokeDasharray = len;
+        el.style.strokeDashoffset = len;
+        return el;
+      };
+      const circleRawEl = pen("circle-raw");
+      const loopsRawEl = pen("loops-raw");
+      const arrowLine = pen("arrow-line");
+
+      const tl = gsap.timeline({ paused: true });
+      const out = "power3.out";
+      const io = "power2.inOut";
+
+      // ---------- 1. intro
+      tl.fromTo("#intro-logo", { scale: 0.86, rotation: -10 }, { scale: 1, rotation: 0, duration: 0.8, ease: "back.out(2.2)" }, 0.1);
+      tl.fromTo("#intro-word", { y: 10 }, { y: 0, duration: 0.6, ease: out }, 0.1);
+      tl.fromTo("#intro-tag", { y: 14, opacity: 0 }, { y: 0, opacity: 1, duration: 0.5, ease: out }, 0.6);
+      tl.to("#intro", { opacity: 0, duration: 0.35, ease: io }, 2.85);
+
+      // ---------- 2. select
+      tl.fromTo("#stage", { opacity: 0 }, { opacity: 1, duration: 0.4, ease: io }, 3.0);
+      tl.set(["#sel", "#sizelabel", "#circle-fit", "#loops-fit", "#arrow-head", "#flash"], { opacity: 0 }, 0);
+      tl.set("#sel .h", { opacity: 0 }, 0);
+      tl.fromTo("#keys1", { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.3, ease: out }, 3.5);
+      tl.fromTo("#keys1 .key", { scale: 1 }, { scale: 0.9, duration: 0.09, stagger: 0.07, yoyo: true, repeat: 1 }, 3.95);
+      tl.to("#keys1", { opacity: 0, duration: 0.25 }, 4.55);
+      tl.fromTo("#cap1", { opacity: 0, x: -14 }, { opacity: 1, x: 0, duration: 0.35, ease: out }, 4.3);
+
+      tl.set("#cursor", { x: 520, y: 330 }, 0);
+      tl.to("#cursor", { opacity: 1, duration: 0.2 }, 4.4);
+      tl.to("#cursor", { x: 250, y: 110, duration: 0.55, ease: io }, 4.5);
+      tl.set("#sel", { opacity: 1 }, 5.1);
+      tl.to("#sizelabel", { opacity: 1, duration: 0.15 }, 5.15);
+      tl.to("#cursor", { x: 1030, y: 510, duration: 1.15, ease: io }, 5.1);
+      tl.to("#sel", { width: 780, height: 400, duration: 1.15, ease: io }, 5.1);
+      const size = { w: 0, h: 0 };
+      tl.to(size, {
+        w: 1170, h: 600, duration: 1.15, ease: io,
+        onUpdate: () => {
+          document.getElementById("sizelabel").textContent = Math.round(size.w) + " × " + Math.round(size.h);
+        },
+      }, 5.1);
+      tl.to("#sel .h", { opacity: 1, duration: 0.2 }, 6.3);
+      tl.fromTo("#toolbar", { opacity: 0, y: 10 }, { opacity: 1, y: 0, duration: 0.35, ease: out }, 6.35);
+      tl.to("#cap1", { opacity: 0, duration: 0.25 }, 7.2);
+
+      // camera: push in on the selection while editing, pull back for the copy
+      tl.to("#sizelabel", { opacity: 0, duration: 0.2 }, 6.95);
+      tl.fromTo("#stage", { scale: 1 }, { scale: 1.3, transformOrigin: "640px 404px", duration: 0.85, ease: io }, 7.1);
+      tl.to("#sizelabel", { opacity: 1, duration: 0.2 }, 18.4);
+      tl.to("#stage", { scale: 1, duration: 0.6, ease: io }, 17.9);
+
+      // ---------- 3. draw
+      tl.fromTo("#cap2", { opacity: 0, x: -14 }, { opacity: 1, x: 0, duration: 0.35, ease: out }, 7.45);
+      tl.to("#cursor", { x: 422, y: 546, duration: 0.45, ease: io }, 6.85); // pen tool
+      tl.to("#toolhl", { x: 34, duration: 0.22, ease: out }, 7.35);
+      tl.to("#cursor", { opacity: 0, duration: 0.15 }, 7.5);
+      tl.to(circleRawEl, { strokeDashoffset: 0, duration: 0.95, ease: "power1.inOut" }, 7.7);
+      tl.to(circleRawEl, { opacity: 0, duration: 0.18 }, 8.85);
+      tl.fromTo("#circle-fit", { opacity: 0, scale: 0.94, transformOrigin: "372px 216px" }, { opacity: 1, scale: 1, duration: 0.3, ease: "back.out(2.4)" }, 8.85);
+      tl.to(loopsRawEl, { strokeDashoffset: 0, duration: 1.35, ease: "power1.inOut" }, 9.3);
+      tl.to(loopsRawEl, { opacity: 0, duration: 0.22 }, 10.85);
+      tl.to("#loops-fit", { opacity: 1, duration: 0.22 }, 10.85);
+      tl.to("#toolhl", { x: 136, duration: 0.22, ease: out }, 11.3); // arrow tool
+      tl.to(arrowLine, { strokeDashoffset: 0, duration: 0.4, ease: "power2.out" }, 11.55);
+      tl.fromTo("#arrow-head", { opacity: 0, scale: 0.3, transformOrigin: "820px 400px" }, { opacity: 1, scale: 1, duration: 0.22, ease: "back.out(2.6)" }, 11.88);
+      tl.to("#cap2", { opacity: 0, duration: 0.25 }, 12.5);
+
+      // ---------- 4. type
+      tl.fromTo("#cap3", { opacity: 0, x: -14 }, { opacity: 1, x: 0, duration: 0.35, ease: out }, 12.75);
+      tl.to("#toolhl", { x: 238, duration: 0.22, ease: out }, 12.6); // text tool
+      tl.fromTo("#textpanel", { opacity: 0, y: 10 }, { opacity: 1, y: 0, duration: 0.3, ease: out }, 12.75);
+      tl.set("#weighthl", { x: 138 }, 0); // SemiBold
+      tl.set("#caret", { opacity: 0 }, 0);
+      tl.set("#caret", { opacity: 1 }, 12.95);
+      document.querySelectorAll("#note .typed span").forEach((el, i) => {
+        tl.set(el, { display: "inline" }, 13.15 + i * 0.11);
+      });
+      [14.25, 14.75].forEach((t) => {
+        tl.set("#caret", { opacity: 0 }, t);
+        tl.set("#caret", { opacity: 1 }, t + 0.25);
+      });
+      // weight sweep: Thin → Black
+      const sweep = [["#w100", 0], ["#w300", 46], ["#w400", 92], ["#w700", 184], ["#w900", 230]];
+      let prev = "#note .typed";
+      sweep.forEach(([layer, x], i) => {
+        const t = 15.05 + i * 0.36;
+        if (i === 0) tl.set("#caret", { opacity: 0 }, t);
+        tl.set(prev, { opacity: 0 }, t);
+        tl.set(layer, { opacity: 1 }, t);
+        tl.to("#weighthl", { x, duration: 0.16, ease: out }, t - 0.04);
+        prev = layer;
+      });
+      // outline on
+      tl.to("#outlinebtn .hl", { opacity: 1, duration: 0.15 }, 17.05);
+      tl.fromTo("#stroke", { opacity: 0 }, { opacity: 1, duration: 0.2, ease: out }, 17.1);
+      tl.fromTo("#note", { scale: 1 }, { scale: 1.04, duration: 0.14, yoyo: true, repeat: 1, transformOrigin: "160px 46px" }, 17.1);
+      tl.to("#cap3", { opacity: 0, duration: 0.25 }, 17.85);
+
+      // ---------- 5. copy
+      tl.fromTo("#cap4", { opacity: 0, x: -14 }, { opacity: 1, x: 0, duration: 0.35, ease: out }, 18.1);
+      tl.to(["#toolbar", "#textpanel"], { opacity: 0, y: 8, duration: 0.25 }, 17.95);
+      tl.fromTo("#keys2", { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.25, ease: out }, 18.05);
+      tl.fromTo("#keys2 .key", { scale: 1 }, { scale: 0.88, duration: 0.1, yoyo: true, repeat: 1 }, 18.5);
+      tl.fromTo("#flash", { opacity: 0 }, { opacity: 0.85, duration: 0.07, yoyo: true, repeat: 1 }, 18.62);
+      tl.to("#keys2", { opacity: 0, duration: 0.25 }, 18.95);
+      tl.fromTo("#toast", { opacity: 0, x: 40 }, { opacity: 1, x: 0, duration: 0.4, ease: out }, 18.85);
+      tl.fromTo("#formats", { opacity: 0, y: 10 }, { opacity: 1, y: 0, duration: 0.3, ease: out }, 19.05);
+      tl.to("#fmthl", { x: 96, duration: 0.2, ease: out }, 19.45);
+      tl.to("#fmthl", { x: 192, duration: 0.2, ease: out }, 19.75);
+      tl.to("#fmthl", { x: 288, duration: 0.2, ease: out }, 20.05);
+      tl.to(["#stage", "#captions"], { opacity: 0, duration: 0.35, ease: io }, 20.5);
+
+      // ---------- 6. outro
+      tl.fromTo("#outro-logo", { scale: 0.5, opacity: 0 }, { scale: 1, opacity: 1, duration: 0.5, ease: "back.out(1.8)" }, 20.8);
+      tl.fromTo("#outro-word", { x: -18, opacity: 0 }, { x: 0, opacity: 1, duration: 0.45, ease: out }, 20.95);
+      tl.fromTo("#outro .fact", { y: 14, opacity: 0 }, { y: 0, opacity: 1, duration: 0.4, ease: out, stagger: 0.09 }, 21.25);
+      tl.to("#outro", { opacity: 0, duration: 0.25, ease: io }, 23.75);
+
+      window.__timelines = window.__timelines || {};
+      window.__timelines["main"] = tl;
+      tl.seek(0);
+    </script>
+  </body>
+</html>

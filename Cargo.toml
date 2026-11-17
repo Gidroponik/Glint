@@ -1,0 +1,57 @@
+[package]
+name = "glint"
+version = "0.1.0"
+edition = "2024"
+description = "Screenshot tool for Windows with on-screen annotation"
+
+[dependencies]
+gpui = "0.2.2"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+png = "0.18"
+tiny-skia = "0.11"
+ab_glyph = "0.2"
+color_quant = "1.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+async-channel = "2"
+raw-window-handle = "0.6"
+dirs = "6"
+lyon = "1"
+windows-registry = "0.5"
+smallvec = "1"
+
+[dependencies.windows]
+version = "0.61"
+features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Security",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
+    "Win32_System_LibraryLoader",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+]
+
+[dev-dependencies]
+arboard = "3"
+
+[build-dependencies]
+embed-resource = "3"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+strip = true
+panic = "abort"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

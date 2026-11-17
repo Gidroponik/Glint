@@ -1,0 +1,9 @@
+/target
+.idea/
+promo/.hyperframes/
+promo/node_modules/
+promo/snapshots/
+# local leftovers, not part of the app
+/main.go
+/go.mod
+/tz.txt
