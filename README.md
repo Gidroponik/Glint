@@ -6,6 +6,10 @@ Screenshot tool for Windows with on-screen annotation. Written in Rust with [GPU
 
 [Demo as MP4](docs/glint-demo.mp4)
 
+## Download
+
+Get `glint.exe` from [Releases](https://github.com/Gidroponik/Glint/releases). No installer, one file.
+
 ## Features
 
 - Region or full-screen capture. The screen is frozen while you select.
@@ -59,15 +63,6 @@ cargo build --release
 ```
 
 The binary is `target/release/glint.exe`. Run it with `--hidden` to start in the tray.
-
-## Demo video
-
-`promo/` is a [HyperFrames](https://github.com/heygen-com/hyperframes) project. To re-render:
-
-```
-cd promo
-npm run render
-```
 
 ## Fonts
 
