@@ -1,8 +1,7 @@
 /target
 .idea/
-promo/.hyperframes/
-promo/node_modules/
-promo/snapshots/
+# promo video sources (HyperFrames), kept locally
+/promo/
 # local leftovers, not part of the app
 /main.go
 /go.mod
