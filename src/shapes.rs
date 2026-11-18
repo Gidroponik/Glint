@@ -58,6 +58,8 @@ pub enum Kind {
     Arrow(P, P),
     Rect(P, P),
     Ellipse(P, P),
+    /// Размытый прямоугольник: скрывает то, что под ним на снимке.
+    Blur(P, P),
     Text { at: P, text: String, size: f32, weight: u16, outline: bool },
 }
 
@@ -155,7 +157,7 @@ impl Shape {
                     fill: false,
                 }]
             }
-            Kind::Text { .. } => vec![],
+            Kind::Blur(..) | Kind::Text { .. } => vec![],
         }
     }
 }

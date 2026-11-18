@@ -47,6 +47,13 @@ fn icon_body(name: &str) -> Option<&'static str> {
         "rect" => r#"<rect x="3" y="5" width="18" height="14" rx="2"/>"#,
         "ellipse" => r#"<circle cx="12" cy="12" r="9"/>"#,
         "text" => r#"<path d="M4 7V4h16v3"/><path d="M9 20h6"/><path d="M12 4v16"/>"#,
+        // мозаика: так обычно обозначают скрытие/пикселизацию
+        "blur" => {
+            r#"<rect x="1.5" y="1.5" width="7" height="7" fill="black" stroke="none"/><rect x="8.5" y="1.5" width="7" height="7" fill="black" stroke="none" opacity=".4"/><rect x="15.5" y="1.5" width="7" height="7" fill="black" stroke="none"/><rect x="1.5" y="8.5" width="7" height="7" fill="black" stroke="none" opacity=".4"/><rect x="8.5" y="8.5" width="7" height="7" fill="black" stroke="none"/><rect x="15.5" y="8.5" width="7" height="7" fill="black" stroke="none" opacity=".4"/><rect x="1.5" y="15.5" width="7" height="7" fill="black" stroke="none"/><rect x="8.5" y="15.5" width="7" height="7" fill="black" stroke="none" opacity=".4"/><rect x="15.5" y="15.5" width="7" height="7" fill="black" stroke="none"/>"#
+        }
+        "ocr" => {
+            r#"<path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 8h8"/><path d="M7 12h10"/><path d="M7 16h6"/>"#
+        }
         "undo" => {
             r#"<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11"/>"#
         }

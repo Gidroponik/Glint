@@ -1,12 +1,14 @@
 #![windows_subsystem = "windows"]
 
 mod autostart;
+mod blur;
 mod capture;
 mod export;
 mod fonts;
 mod home;
 mod hotkeys;
 mod icon;
+mod ocr;
 mod overlay;
 mod settings;
 mod shapes;
@@ -29,6 +31,8 @@ use std::time::Duration;
 pub enum Action {
     Copy,
     Save,
+    /// Распознать текст в выделенной области и скопировать его.
+    Text,
 }
 
 pub struct AppState {
@@ -152,6 +156,7 @@ fn open_overlay(cx: &mut App) -> Option<WindowHandle<overlay::Overlay>> {
     }
     let t0 = std::time::Instant::now();
     let mon = capture::monitor_under_cursor();
+    let found = win::window_rects();
     let Some(shot) = capture::capture_monitor(mon) else {
         toast::show("Capture failed", "The screen is not available", false, cx);
         return None;
@@ -161,6 +166,21 @@ fn open_overlay(cx: &mut App) -> Option<WindowHandle<overlay::Overlay>> {
     let buffer = image::RgbaImage::from_raw(w, h, shot.bgra)?;
     // RenderImage хранит пиксели в BGRA — ровно то, что отдаёт GDI, без конвертации.
     let image = Arc::new(RenderImage::new(vec![image::Frame::new(buffer)]));
+
+    // Окна на этом мониторе — в логических координатах оверлея, для выделения одним кликом.
+    let windows: Vec<shapes::R> = found
+        .into_iter()
+        .filter_map(|(l, t, r, b)| {
+            let (x0, y0) = ((l - mon.x).max(0), (t - mon.y).max(0));
+            let (x1, y1) = ((r - mon.x).min(w as i32), (b - mon.y).min(h as i32));
+            (x1 - x0 >= 40 && y1 - y0 >= 40).then(|| shapes::R {
+                x: x0 as f32 / scale,
+                y: y0 as f32 / scale,
+                w: (x1 - x0) as f32 / scale,
+                h: (y1 - y0) as f32 / scale,
+            })
+        })
+        .collect();
 
     cx.global_mut::<AppState>().overlay_open = true;
     let opened = cx.open_window(
@@ -184,7 +204,7 @@ fn open_overlay(cx: &mut App) -> Option<WindowHandle<overlay::Overlay>> {
             ..Default::default()
         },
         move |window, cx| {
-            let view = cx.new(|cx| overlay::Overlay::new(image, w, h, scale, cx));
+            let view = cx.new(|cx| overlay::Overlay::new(image, w, h, scale, windows, cx));
             window.focus(&view.read(cx).focus_handle());
             view
         },
@@ -324,6 +344,51 @@ fn process(img: &Rendered, st: &Settings, target: Option<std::path::PathBuf>, co
         detail,
         ok: true,
     }
+}
+
+/// Распознаёт текст на снимке и кладёт его в буфер обмена.
+pub fn deliver_text(img: Rendered, cx: &mut App) {
+    cx.spawn(async move |cx| {
+        let outcome = cx
+            .background_executor()
+            .spawn(async move {
+                let text = match ocr::recognize(&img) {
+                    Ok(text) => text,
+                    Err(e) => return ("Text recognition failed".to_string(), e, false),
+                };
+                put_text(&text)
+            })
+            .await;
+        let _ = cx.update(|cx| toast::show(outcome.0, outcome.1, outcome.2, cx));
+    })
+    .detach();
+}
+
+/// Кладёт уже распознанный текст в буфер обмена и показывает уведомление.
+pub fn deliver_plain_text(text: String, cx: &mut App) {
+    let outcome = put_text(&text);
+    toast::show(outcome.0, outcome.1, outcome.2, cx);
+}
+
+/// Копирует текст; возвращает заголовок, пояснение и признак успеха для уведомления.
+fn put_text(text: &str) -> (String, String, bool) {
+    if text.trim().is_empty() {
+        return ("No text found".to_string(), "Nothing was copied".to_string(), false);
+    }
+    #[cfg(debug_assertions)]
+    if let Some(dir) = std::env::var_os("GLINT_SELFTEST") {
+        let _ = std::fs::write(std::path::PathBuf::from(dir).join("ocr.txt"), text);
+        return ("Text copied".to_string(), String::new(), true);
+    }
+    if let Err(e) = export::copy_text(text) {
+        return ("Copy failed".to_string(), e, false);
+    }
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut preview: String = flat.chars().take(70).collect();
+    if flat.chars().count() > 70 {
+        preview.push('…');
+    }
+    ("Text copied".to_string(), preview, true)
 }
 
 /// Доставляет готовый снимок: буфер обмена и/или файл, затем показывает уведомление.

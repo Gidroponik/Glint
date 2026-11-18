@@ -47,6 +47,68 @@ pub fn make_popup(hwnd: HWND, x: i32, y: i32, w: i32, h: i32, activate: bool) {
     }
 }
 
+/// Прямоугольники видимых окон верхнего уровня (физические пиксели: left, top, right, bottom),
+/// от верхнего к нижнему. Собственные окна, рабочий стол и скрытые окна пропускаются.
+pub fn window_rects() -> Vec<(i32, i32, i32, i32)> {
+    use std::ffi::c_void;
+    use windows::Win32::Foundation::{LPARAM, RECT};
+    use windows::Win32::Graphics::Dwm::{
+        DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute,
+    };
+    use windows::Win32::System::Threading::GetCurrentProcessId;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetClassNameW, GetWindowLongPtrW, GetWindowRect, GetWindowThreadProcessId,
+        IsIconic, IsWindowVisible, WS_EX_TRANSPARENT,
+    };
+    use windows::core::BOOL;
+
+    unsafe extern "system" fn each(hwnd: HWND, lp: LPARAM) -> BOOL {
+        unsafe {
+            let out = &mut *(lp.0 as *mut Vec<(i32, i32, i32, i32)>);
+            if !IsWindowVisible(hwnd).as_bool() || IsIconic(hwnd).as_bool() {
+                return true.into();
+            }
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(hwnd, Some(&mut pid));
+            if pid == GetCurrentProcessId() {
+                return true.into();
+            }
+            if GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_TRANSPARENT.0 != 0 {
+                return true.into();
+            }
+            let mut cloaked = 0u32;
+            let _ = DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &mut cloaked as *mut _ as *mut c_void, 4);
+            if cloaked != 0 {
+                return true.into();
+            }
+            let mut class = [0u16; 64];
+            let n = GetClassNameW(hwnd, &mut class).max(0) as usize;
+            let class = String::from_utf16_lossy(&class[..n]);
+            if matches!(class.as_str(), "Progman" | "WorkerW") {
+                return true.into();
+            }
+            let mut r = RECT::default();
+            let framed = DwmGetWindowAttribute(
+                hwnd,
+                DWMWA_EXTENDED_FRAME_BOUNDS,
+                &mut r as *mut _ as *mut c_void,
+                size_of::<RECT>() as u32,
+            );
+            if framed.is_err() && GetWindowRect(hwnd, &mut r).is_err() {
+                return true.into();
+            }
+            out.push((r.left, r.top, r.right, r.bottom));
+            true.into()
+        }
+    }
+
+    let mut out: Vec<(i32, i32, i32, i32)> = Vec::new();
+    unsafe {
+        let _ = EnumWindows(Some(each), LPARAM(&mut out as *mut _ as isize));
+    }
+    out
+}
+
 pub fn vk_down(vk: i32) -> bool {
     unsafe { (GetAsyncKeyState(vk) as u16 & 0x8000) != 0 }
 }

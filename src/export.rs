@@ -14,7 +14,7 @@ pub struct Rendered {
 }
 
 /// Область кадрирования в пикселях снимка.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Crop {
     pub x: u32,
     pub y: u32,
@@ -58,8 +58,18 @@ pub fn render(bgra: &[u8], img_w: u32, crop: Crop, scale: f32, shapes: &[Shape])
     };
     let tf = sk::Transform::from_translate(-(crop.x as f32), -(crop.y as f32)).pre_scale(scale, scale);
 
+    // Размытие меняет сам снимок, поэтому идёт первым: остальные аннотации ложатся поверх.
+    for shape in shapes {
+        if let Kind::Blur(a, b) = &shape.kind {
+            let rect = crate::shapes::R::from_points(*a, *b);
+            blur_rect(&mut pixmap, bgra, img_w, crop, scale, rect, shape.width);
+        }
+    }
     for shape in shapes {
         let (r, g, b) = rgb(shape.color);
+        if matches!(shape.kind, Kind::Blur(..)) {
+            continue;
+        }
         if let Kind::Text { at, text, size, weight, outline } = &shape.kind {
             let ox = at.x * scale - crop.x as f32;
             let oy = at.y * scale - crop.y as f32;
@@ -103,6 +113,44 @@ pub fn render(bgra: &[u8], img_w: u32, crop: Crop, scale: f32, shapes: &[Shape])
         w: crop.w,
         h: crop.h,
         rgba: pixmap.take(),
+    }
+}
+
+/// Заменяет прямоугольник `rect` (логические координаты) размытым фрагментом исходного снимка.
+fn blur_rect(
+    pixmap: &mut sk::Pixmap,
+    bgra: &[u8],
+    img_w: u32,
+    crop: Crop,
+    scale: f32,
+    rect: crate::shapes::R,
+    width: f32,
+) {
+    let img_h = (bgra.len() / 4) as u32 / img_w.max(1);
+    let px = |v: f32, lo: u32, hi: u32| ((v * scale).round().max(0.0) as u32).clamp(lo, hi);
+    let (x0, x1) = (px(rect.x, crop.x, crop.x + crop.w), px(rect.right(), crop.x, crop.x + crop.w));
+    let (y0, y1) = (px(rect.y, crop.y, crop.y + crop.h), px(rect.bottom(), crop.y, crop.y + crop.h));
+    if x1 <= x0 || y1 <= y0 {
+        return;
+    }
+    let (w, h) = ((x1 - x0) as usize, (y1 - y0) as usize);
+    let radius = (crate::blur::radius(width) * scale).round().max(1.0) as u32;
+    let blurred = crate::blur::region(bgra, img_w, img_h, x0, y0, w as u32, h as u32, radius);
+    if blurred.len() != w * h * 4 {
+        return;
+    }
+    let stride = crop.w as usize * 4;
+    let data = pixmap.data_mut();
+    for row in 0..h {
+        let o = ((y0 - crop.y) as usize + row) * stride + (x0 - crop.x) as usize * 4;
+        let dst = &mut data[o..o + w * 4];
+        let src = &blurred[row * w * 4..(row + 1) * w * 4];
+        for (d, s) in dst.chunks_exact_mut(4).zip(src.chunks_exact(4)) {
+            d[0] = s[2];
+            d[1] = s[1];
+            d[2] = s[0];
+            d[3] = 255;
+        }
     }
 }
 
@@ -348,6 +396,48 @@ pub fn copy_to_clipboard(img: &Rendered, file: Option<&Path>) -> Result<(), Stri
     }
 }
 
+/// Кладёт в буфер обмена текст (CF_UNICODETEXT).
+pub fn copy_text(text: &str) -> Result<(), String> {
+    use windows::Win32::Foundation::{HANDLE, HGLOBAL};
+    use windows::Win32::System::DataExchange::{
+        CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
+    };
+    use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
+    const CF_UNICODETEXT: u32 = 13;
+
+    let normalized = text.replace("\r\n", "\n").replace('\n', "\r\n");
+    let wide: Vec<u16> = normalized.encode_utf16().chain([0]).collect();
+    let bytes = wide.len() * 2;
+    unsafe {
+        let mut opened = false;
+        for _ in 0..10 {
+            if OpenClipboard(None).is_ok() {
+                opened = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(15));
+        }
+        if !opened {
+            return Err("the clipboard is busy".into());
+        }
+        let _ = EmptyClipboard();
+        let result = (|| {
+            let mem: HGLOBAL = GlobalAlloc(GMEM_MOVEABLE, bytes).map_err(|e| e.to_string())?;
+            let ptr = GlobalLock(mem) as *mut u8;
+            if ptr.is_null() {
+                return Err("GlobalLock".to_string());
+            }
+            std::ptr::copy_nonoverlapping(wide.as_ptr() as *const u8, ptr, bytes);
+            let _ = GlobalUnlock(mem);
+            SetClipboardData(CF_UNICODETEXT, Some(HANDLE(mem.0)))
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        })();
+        let _ = CloseClipboard();
+        result
+    }
+}
+
 /// Номер состояния буфера обмена — чтобы не затереть то, что пользователь скопировал позже.
 pub fn clipboard_sequence() -> u32 {
     unsafe { windows::Win32::System::DataExchange::GetClipboardSequenceNumber() }
@@ -474,6 +564,38 @@ Hello".into(),
         let i = ((7 + 3) * w + 5 + 4) as usize * 4;
         let o = (3 * 20 + 4) * 4;
         assert_eq!(&out.rgba[o..o + 4], &[bgra[i + 2], bgra[i + 1], bgra[i], 255]);
+    }
+
+    #[test]
+    fn blur_stays_inside_its_rect() {
+        let (w, h) = (120u32, 80u32);
+        let bgra: Vec<u8> = (0..w * h)
+            .flat_map(|i| {
+                let v = if (i % w / 2 + i / w / 2) % 2 == 0 { 255 } else { 0 };
+                [v, v, v, 255]
+            })
+            .collect();
+        let crop = Crop { x: 10, y: 10, w: 100, h: 60 };
+        let plain = render(&bgra, w, crop, 2.0, &[]);
+        let blur = Shape {
+            kind: Kind::Blur(p(15.0, 10.0), p(40.0, 30.0)),
+            color: 0,
+            width: 4.0,
+            alpha: 1.0,
+        };
+        let out = render(&bgra, w, crop, 2.0, &[blur]);
+        // прямоугольник 30..80 × 20..60 в пикселях снимка → 20..70 × 10..50 в кадре
+        for y in 0..60usize {
+            for x in 0..100usize {
+                let i = (y * 100 + x) * 4;
+                let inside = (20..70).contains(&x) && (10..50).contains(&y);
+                if inside {
+                    assert!((90..166).contains(&out.rgba[i]), "not blurred at {x},{y}: {}", out.rgba[i]);
+                } else {
+                    assert_eq!(out.rgba[i], plain.rgba[i], "changed outside at {x},{y}");
+                }
+            }
+        }
     }
 
     #[test]

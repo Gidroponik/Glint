@@ -12,12 +12,38 @@ Get `glint.exe` from [Releases](https://github.com/Gidroponik/Glint/releases). N
 
 ## Features
 
+**Capture**
+
 - Region or full-screen capture. The screen is frozen while you select.
-- Pen, marker, line, arrow, rectangle, ellipse, text.
+- Click a window to select it exactly; the window under the cursor is outlined.
+- A magnifier next to the cursor shows the pixels and the color under it, so the edge of a region can be set to the pixel.
+- The selection can be moved and resized after it is made.
+
+**Annotate**
+
+- Pen, marker, line, arrow, rectangle, ellipse, text and blur. Eight colors, three thicknesses.
 - Freehand strokes are smoothed. Rough lines, circles and rectangles snap to clean shapes.
 - Text is set in Montserrat: six weights, any size, optional outline. It can be edited, recolored and moved after typing.
+- Blur hides parts of the capture. The thickness buttons set its strength.
+- Undo and redo.
+
+**Text and color**
+
+- Text on the capture is selectable: switch to text mode, drag over the words and copy them. Recognition uses the OCR engine built into Windows and the languages installed in it.
+- Color picker: press `C` or right click before selecting to copy the color under the cursor as `#RRGGBB`.
+
+**Output**
+
 - The capture goes to the clipboard as a bitmap and as a file in the chosen format: PNG, PNG-8, JPEG or WebP.
-- Global hotkeys, tray icon, optional start with Windows.
+- Optional saving of every capture to a folder, or "Save as" for a single one.
+- Copy right after selecting, for quick captures without the editor.
+
+**App**
+
+- Global hotkeys that can be rebound, tray icon, optional start with Windows.
+- One executable, no installer.
+
+See [CHANGELOG.md](CHANGELOG.md) for what changed between versions.
 
 ## Menu
 
@@ -46,9 +72,12 @@ Drag the header to move the window.
 | `Ctrl+Shift+F` | Capture the full screen (default, rebindable) |
 | `Esc` / `Enter` | Copy the selection and close. Without a selection, `Esc` closes. |
 | `Ctrl+S` | Save as |
+| `Ctrl+T` | Text mode: drag over recognized words, then copy. Double-click selects a line, `Ctrl+A` selects all. |
+| `C` or right click before selecting | Copy the color under the cursor as `#RRGGBB` |
+| Click before selecting | Select the window under the cursor |
 | `Ctrl+Z` / `Ctrl+Y` | Undo / redo |
 | `Ctrl+A` | Select the whole screen |
-| `1`–`8` | Switch tool |
+| `1`–`9`, `0` | Switch tool |
 | `Shift` while drawing | Constrain to 45° steps, squares and circles |
 | Right click | Clear the selection |
 

@@ -25,9 +25,12 @@ pub enum Tool {
     Rect,
     Ellipse,
     Text,
+    Blur,
+    /// Выделение распознанного текста прямо на снимке.
+    Pick,
 }
 
-const TOOLS: [(Tool, &str); 8] = [
+const TOOLS: [(Tool, &str); 10] = [
     (Tool::Select, "select"),
     (Tool::Pen, "pen"),
     (Tool::Marker, "marker"),
@@ -36,10 +39,17 @@ const TOOLS: [(Tool, &str); 8] = [
     (Tool::Rect, "rect"),
     (Tool::Ellipse, "ellipse"),
     (Tool::Text, "text"),
+    (Tool::Blur, "blur"),
+    (Tool::Pick, "ocr"),
 ];
 
 const WIDTHS: [f32; 3] = [2.0, 4.0, 8.0];
-const TOOLBAR_W: f32 = 900.0;
+const TOOLBAR_W: f32 = 1010.0;
+/// Лупа: число увеличенных пикселей по стороне и размер одного из них.
+const LOUPE_CELLS: i32 = 15;
+const LOUPE_CELL: f32 = 8.0;
+/// Во сколько раз уменьшена размытая копия снимка для предпросмотра.
+const BLUR_DOWNSCALE: u32 = 4;
 const TOOLBAR_H: f32 = 46.0;
 const HANDLE_HIT: f32 = 9.0;
 
@@ -51,6 +61,8 @@ enum Drag {
     Draw { start: P, raw: Vec<P> },
     MoveText { idx: usize, grab: P, orig: P },
     SelectText { idx: usize },
+    /// Выделение распознанных слов: от слова-якоря до слова под курсором.
+    PickText { start: P, anchor: Option<usize> },
 }
 
 pub struct Overlay {
@@ -81,14 +93,56 @@ pub struct Overlay {
     /// Счётчик для автоповтора «+/−»: смена значения останавливает повтор.
     hold_gen: u64,
     cursor: P,
+    /// Размытые копии снимка для предпросмотра, по одной на силу размытия.
+    blurs: Vec<BlurLayer>,
+    /// Окна, которые были на экране в момент снимка (сверху вниз).
+    windows: Vec<R>,
+    /// Распознанный текст выделенной области и область, для которой он получен.
+    ocr: Option<OcrLayer>,
+    ocr_pending: Option<Crop>,
+    ocr_failed: Option<String>,
+    /// Выделенные слова: (якорь, конец) — индексы в `ocr.words`.
+    pick: Option<(usize, usize)>,
     auto_shapes: bool,
     instant: bool,
     closed: bool,
 }
 
+/// Распознанное слово: текст, рамка в координатах оверлея и номер строки.
+#[derive(Clone)]
+struct PickWord {
+    text: String,
+    r: R,
+    line: usize,
+}
+
+struct OcrLayer {
+    crop: Crop,
+    words: Vec<PickWord>,
+}
+
+/// Размытая уменьшенная копия снимка и её размер в логических пикселях.
+#[derive(Clone)]
+struct BlurLayer {
+    key: u32,
+    image: Arc<RenderImage>,
+    w: f32,
+    h: f32,
+}
+
 /// Снимок состояния для отрисовки кадра.
 struct Snap {
     image: Arc<RenderImage>,
+    img_w: u32,
+    img_h: u32,
+    blurs: Vec<BlurLayer>,
+    /// Окно под курсором, пока область не выбрана.
+    hover: Option<R>,
+    /// Режим выделения текста: слова, выделение и подсказка о состоянии распознавания.
+    pick_mode: bool,
+    words: Vec<PickWord>,
+    pick: Option<(usize, usize)>,
+    note: Option<&'static str>,
     sel: Option<R>,
     shapes: Vec<Shape>,
     editing: Option<usize>,
@@ -120,6 +174,7 @@ impl Overlay {
         img_w: u32,
         img_h: u32,
         scale: f32,
+        windows: Vec<R>,
         cx: &mut Context<Self>,
     ) -> Self {
         let s = &cx.global::<AppState>().settings;
@@ -146,6 +201,12 @@ impl Overlay {
             anchor: 0,
             hold_gen: 0,
             cursor: p(-100.0, -100.0),
+            blurs: Vec::new(),
+            windows,
+            ocr: None,
+            ocr_pending: None,
+            ocr_failed: None,
+            pick: None,
             auto_shapes: s.auto_shapes,
             instant: s.instant_copy,
             closed: false,
@@ -326,6 +387,149 @@ impl Overlay {
         self.tool == Tool::Text || self.selected.is_some() || self.editing.is_some()
     }
 
+    /// Готовит размытые копии снимка для всех фигур размытия, которые сейчас на экране.
+    fn ensure_blurs(&mut self) {
+        let keys: Vec<u32> = self
+            .shapes
+            .iter()
+            .chain(&self.current)
+            .filter(|s| matches!(s.kind, Kind::Blur(..)))
+            .map(|s| s.width.to_bits())
+            .collect();
+        for key in keys {
+            if self.blurs.iter().any(|b| b.key == key) {
+                continue;
+            }
+            let Some(bytes) = self.image.as_bytes(0) else { return };
+            let radius = crate::blur::radius(f32::from_bits(key)) * self.scale;
+            let (data, w, h) =
+                crate::blur::preview(bytes, self.img_w, self.img_h, BLUR_DOWNSCALE, radius);
+            let Some(buffer) = image::RgbaImage::from_raw(w, h, data) else { return };
+            let k = BLUR_DOWNSCALE as f32 / self.scale;
+            self.blurs.push(BlurLayer {
+                key,
+                image: Arc::new(RenderImage::new(vec![image::Frame::new(buffer)])),
+                w: w as f32 * k,
+                h: h as f32 * k,
+            });
+        }
+    }
+
+    /// Область выделения в пикселях снимка.
+    fn crop_of(&self, sel: &R) -> Crop {
+        let s = self.scale;
+        let x0 = ((sel.x * s).round() as i64).clamp(0, self.img_w as i64 - 1) as u32;
+        let y0 = ((sel.y * s).round() as i64).clamp(0, self.img_h as i64 - 1) as u32;
+        let x1 = ((sel.right() * s).round() as i64).clamp(x0 as i64 + 1, self.img_w as i64) as u32;
+        let y1 = ((sel.bottom() * s).round() as i64).clamp(y0 as i64 + 1, self.img_h as i64) as u32;
+        Crop {
+            x: x0,
+            y: y0,
+            w: x1 - x0,
+            h: y1 - y0,
+        }
+    }
+
+    /// В режиме выделения текста распознаёт слова в текущей области (в фоне, один раз на область).
+    fn ensure_ocr(&mut self, cx: &mut Context<Self>) {
+        if self.tool != Tool::Pick || !matches!(self.drag, Drag::None) {
+            return;
+        }
+        let Some(sel) = self.sel else { return };
+        let crop = self.crop_of(&sel);
+        if self.ocr.as_ref().is_some_and(|o| o.crop == crop) || self.ocr_pending == Some(crop) {
+            return;
+        }
+        let Some(bytes) = self.image.as_bytes(0) else { return };
+        let img = export::render(bytes, self.img_w, crop, self.scale, &[]);
+        self.ocr = None;
+        self.ocr_failed = None;
+        self.pick = None;
+        self.ocr_pending = Some(crop);
+        let scale = self.scale;
+        cx.spawn(async move |this, cx| {
+            let found = cx
+                .background_executor()
+                .spawn(async move { crate::ocr::recognize_lines(&img) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.ocr_pending != Some(crop) {
+                    return;
+                }
+                this.ocr_pending = None;
+                let mut words = Vec::new();
+                match found {
+                    Ok(lines) => {
+                        for (line, row) in lines.into_iter().enumerate() {
+                            for w in row {
+                                words.push(PickWord {
+                                    text: w.text,
+                                    r: R {
+                                        x: (crop.x as f32 + w.x) / scale,
+                                        y: (crop.y as f32 + w.y) / scale,
+                                        w: w.w / scale,
+                                        h: w.h / scale,
+                                    },
+                                    line,
+                                });
+                            }
+                        }
+                    }
+                    Err(e) => this.ocr_failed = Some(e),
+                }
+                this.ocr = Some(OcrLayer { crop, words });
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Копирует результат: в режиме текста — выделенные слова, иначе — картинку.
+    fn copy(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.tool == Tool::Pick && self.sel.is_some() {
+            self.copy_picked(window, cx);
+        } else {
+            self.finish(Action::Copy, window, cx);
+        }
+    }
+
+    /// Копирует выделенные слова; без выделения — весь текст области.
+    fn copy_picked(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let ready = self.ocr.as_ref().filter(|_| self.ocr_pending.is_none());
+        let Some(layer) = ready else {
+            // распознавание ещё не закончилось — распознаём область целиком и копируем всё
+            self.finish(Action::Text, window, cx);
+            return;
+        };
+        let (a, b) = match self.pick {
+            Some((a, b)) => (a.min(b), a.max(b)),
+            None => (0, layer.words.len().saturating_sub(1)),
+        };
+        let mut text = String::new();
+        let mut line = None;
+        for w in layer.words.iter().skip(a).take(b + 1 - a) {
+            if let Some(prev) = line {
+                text.push(if prev == w.line { ' ' } else { '\n' });
+            }
+            text.push_str(&w.text);
+            line = Some(w.line);
+        }
+        self.close(window, cx);
+        crate::deliver_plain_text(text, cx);
+    }
+
+    /// Верхнее окно, в которое попадает точка.
+    fn window_at(&self, q: P) -> Option<R> {
+        self.windows.iter().find(|w| w.contains(q)).copied()
+    }
+
+    /// Цвет пикселя снимка под точкой.
+    fn color_at(&self, q: P) -> Option<u32> {
+        let bytes = self.image.as_bytes(0)?;
+        let (x, y) = ((q.x * self.scale) as i32, (q.y * self.scale) as i32);
+        pixel(bytes, self.img_w as i32, self.img_h as i32, x, y)
+    }
+
     fn new_shape(&self, kind: Kind) -> Shape {
         let marker = self.tool == Tool::Marker;
         Shape {
@@ -398,10 +602,26 @@ impl Overlay {
             match self.tool {
                 Tool::Select => {
                     if ev.click_count >= 2 {
-                        self.finish(Action::Copy, window, cx);
+                        self.copy(window, cx);
                         return;
                     }
                     self.drag = Drag::MoveSel { grab: q, orig: sel };
+                }
+                Tool::Pick => {
+                    let words = self.ocr.as_ref().map(|o| o.words.as_slice()).unwrap_or(&[]);
+                    let hit = word_hit(words, q);
+                    self.pick = hit.map(|i| (i, i));
+                    match (hit, ev.click_count) {
+                        // двойной клик — вся строка, тройной — весь текст
+                        (Some(i), 2) => {
+                            let line = words[i].line;
+                            let first = words.iter().position(|w| w.line == line).unwrap_or(i);
+                            let last = words.iter().rposition(|w| w.line == line).unwrap_or(i);
+                            self.pick = Some((first, last));
+                        }
+                        (Some(_), n) if n >= 3 => self.pick = Some((0, words.len() - 1)),
+                        _ => self.drag = Drag::PickText { start: q, anchor: hit },
+                    }
                 }
                 Tool::Text => {
                     self.redo.clear();
@@ -482,6 +702,17 @@ impl Overlay {
                     self.caret = text_index_at(shape, q, window);
                 }
             }
+            Drag::PickText { start, anchor } => {
+                if let Some(layer) = &self.ocr {
+                    // протяжка с пустого места цепляется за ближайшее слово
+                    if anchor.is_none() && start.dist(q) > 4.0 {
+                        *anchor = word_near(&layer.words, *start);
+                    }
+                    if let (Some(a), Some(c)) = (*anchor, word_near(&layer.words, q)) {
+                        self.pick = Some((a, c));
+                    }
+                }
+            }
             Drag::MoveText { idx, grab, orig } => {
                 let to = p(orig.x + q.x - grab.x, orig.y + q.y - grab.y);
                 if let Some(Shape {
@@ -507,7 +738,8 @@ impl Overlay {
                     Tool::Ellipse => {
                         Kind::Ellipse(a, if shift { shapes::snap_square(a, q) } else { q })
                     }
-                    Tool::Select | Tool::Text => return,
+                    Tool::Blur => Kind::Blur(a, if shift { shapes::snap_square(a, q) } else { q }),
+                    Tool::Select | Tool::Text | Tool::Pick => return,
                 };
                 if let Some(cur) = &mut self.current {
                     cur.kind = kind;
@@ -521,11 +753,13 @@ impl Overlay {
         self.hold_gen += 1;
         match std::mem::replace(&mut self.drag, Drag::None) {
             Drag::None => return,
-            Drag::NewSel { .. } => {
-                if self.sel.is_some_and(|s| s.w < 4.0 || s.h < 4.0) {
-                    self.sel = None;
-                } else if self.instant && self.sel.is_some() {
-                    self.finish(Action::Copy, window, cx);
+            Drag::NewSel { start } => {
+                // Клик без протяжки выделяет окно под курсором.
+                if !self.sel.is_some_and(|s| s.w >= 4.0 && s.h >= 4.0) {
+                    self.sel = self.window_at(start);
+                }
+                if self.instant && self.sel.is_some() {
+                    self.copy(window, cx);
                     return;
                 }
             }
@@ -537,7 +771,7 @@ impl Overlay {
                     self.redo.clear();
                 }
             }
-            Drag::MoveText { .. } | Drag::SelectText { .. } => {}
+            Drag::MoveText { .. } | Drag::SelectText { .. } | Drag::PickText { .. } => {}
             Drag::Draw { raw, .. } => {
                 if let Some(mut shape) = self.current.take() {
                     let freehand = matches!(self.tool, Tool::Pen | Tool::Marker);
@@ -552,7 +786,7 @@ impl Overlay {
                     let keep = match &shape.kind {
                         Kind::Stroke(pts) | Kind::Curve(pts) => !pts.is_empty(),
                         Kind::Line(a, b) | Kind::Arrow(a, b) => a.dist(*b) > 2.0,
-                        Kind::Rect(a, b) | Kind::Ellipse(a, b) => {
+                        Kind::Rect(a, b) | Kind::Ellipse(a, b) | Kind::Blur(a, b) => {
                             (a.x - b.x).abs() > 2.0 && (a.y - b.y).abs() > 2.0
                         }
                         Kind::Text { .. } => true,
@@ -567,7 +801,7 @@ impl Overlay {
         cx.notify();
     }
 
-    fn on_right(&mut self, _ev: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_right(&mut self, ev: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         if self.editing.is_some() {
             self.commit_text();
         } else if self.sel.is_some() && matches!(self.drag, Drag::None) {
@@ -577,10 +811,25 @@ impl Overlay {
             self.redo.clear();
             self.current = None;
         } else {
-            self.close(window, cx);
+            // Области ещё нет, на экране лупа: ПКМ забирает цвет пикселя под курсором.
+            if !self.copy_color(pt(ev.position), window, cx) {
+                self.close(window, cx);
+            }
             return;
         }
         cx.notify();
+    }
+
+    /// Копирует цвет пикселя под точкой `q` как `#RRGGBB` и закрывает оверлей.
+    fn copy_color(&mut self, q: P, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(c) = self.color_at(q) else { return false };
+        let hex = format!("#{c:06X}");
+        self.close(window, cx);
+        match export::copy_text(&hex) {
+            Ok(()) => crate::toast::show("Color copied", hex, true, cx),
+            Err(e) => crate::toast::show("Copy failed", e, false, cx),
+        }
+        true
     }
 
     fn undo(&mut self) {
@@ -705,9 +954,18 @@ impl Overlay {
 
         if m.control {
             if win::vk_down(0x43) {
-                self.finish(Action::Copy, window, cx);
+                self.copy(window, cx);
             } else if win::vk_down(0x53) {
                 self.finish(Action::Save, window, cx);
+            } else if win::vk_down(0x54) {
+                if self.sel.is_some() {
+                    self.commit_text();
+                    self.tool = Tool::Pick;
+                }
+            } else if win::vk_down(0x41) && self.tool == Tool::Pick && self.sel.is_some() {
+                // в режиме текста Ctrl+A выделяет весь распознанный текст
+                let n = self.ocr.as_ref().map_or(0, |o| o.words.len());
+                self.pick = (n > 0).then(|| (0, n - 1));
             } else if win::vk_down(0x5A) {
                 if m.shift { self.redo() } else { self.undo() }
             } else if win::vk_down(0x59) {
@@ -720,18 +978,26 @@ impl Overlay {
             return;
         }
 
+        // «C» до выбора области копирует цвет пикселя под курсором (пипетка).
+        let picking = self.sel.is_none() || matches!(self.drag, Drag::NewSel { .. });
+        if picking && win::vk_down(0x43) {
+            if self.copy_color(self.cursor, window, cx) {
+                return;
+            }
+        }
+
         match key {
             "escape" => {
                 // Esc с выделенной областью — сразу копируем её в буфер; без выделения — просто выходим.
                 if self.sel.is_some() {
-                    self.finish(Action::Copy, window, cx);
+                    self.copy(window, cx);
                 } else {
                     self.close(window, cx);
                 }
                 return;
             }
             "enter" => {
-                self.finish(Action::Copy, window, cx);
+                self.copy(window, cx);
                 return;
             }
             "left" | "right" | "up" | "down" if self.selected.is_some() => {
@@ -758,8 +1024,8 @@ impl Overlay {
                 }
                 _ => self.undo(),
             },
-            "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" if self.sel.is_some() => {
-                let i = key.parse::<usize>().unwrap() - 1;
+            "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "0" if self.sel.is_some() => {
+                let i = (key.parse::<usize>().unwrap() + 9) % 10;
                 self.tool = TOOLS[i].0;
             }
             _ => {}
@@ -793,6 +1059,9 @@ impl Overlay {
             }
         });
         let _ = window.drop_image(self.image.clone());
+        for layer in self.blurs.drain(..) {
+            let _ = window.drop_image(layer.image);
+        }
         window.remove_window();
     }
 
@@ -801,20 +1070,17 @@ impl Overlay {
         self.current = None;
         let Some(sel) = self.sel else { return };
         let s = self.scale;
-        let x0 = ((sel.x * s).round() as i64).clamp(0, self.img_w as i64 - 1) as u32;
-        let y0 = ((sel.y * s).round() as i64).clamp(0, self.img_h as i64 - 1) as u32;
-        let x1 = ((sel.right() * s).round() as i64).clamp(x0 as i64 + 1, self.img_w as i64) as u32;
-        let y1 = ((sel.bottom() * s).round() as i64).clamp(y0 as i64 + 1, self.img_h as i64) as u32;
-        let crop = Crop {
-            x: x0,
-            y: y0,
-            w: x1 - x0,
-            h: y1 - y0,
-        };
+        let crop = self.crop_of(&sel);
         let Some(bytes) = self.image.as_bytes(0) else { return };
-        let rendered = export::render(bytes, self.img_w, crop, s, &self.shapes);
+        // Текст распознаём по чистому снимку: аннотации только мешали бы.
+        let shapes: &[Shape] = if action == Action::Text { &[] } else { &self.shapes };
+        let rendered = export::render(bytes, self.img_w, crop, s, shapes);
         self.close(window, cx);
-        crate::deliver(rendered, action, cx);
+        if action == Action::Text {
+            crate::deliver_text(rendered, cx);
+        } else {
+            crate::deliver(rendered, action, cx);
+        }
     }
 
     fn snapshot(&self) -> Snap {
@@ -824,6 +1090,29 @@ impl Overlay {
         }
         Snap {
             image: self.image.clone(),
+            img_w: self.img_w,
+            img_h: self.img_h,
+            blurs: self.blurs.clone(),
+            pick_mode: self.tool == Tool::Pick,
+            words: match &self.ocr {
+                Some(layer) if self.tool == Tool::Pick => layer.words.clone(),
+                _ => Vec::new(),
+            },
+            pick: self.pick,
+            note: if self.tool != Tool::Pick {
+                None
+            } else if self.ocr_pending.is_some() || self.ocr.is_none() {
+                Some("Recognizing text…")
+            } else if self.ocr_failed.is_some() {
+                Some("Text recognition failed")
+            } else if self.ocr.as_ref().is_some_and(|o| o.words.is_empty()) {
+                Some("No text found")
+            } else {
+                None
+            },
+            hover: (self.sel.is_none() && matches!(self.drag, Drag::None))
+                .then(|| self.window_at(self.cursor))
+                .flatten(),
             sel: self.sel,
             shapes,
             editing: self.editing,
@@ -1151,10 +1440,10 @@ impl Overlay {
                     .text_size(px(13.0))
                     .font_weight(FontWeight::SEMIBOLD)
                     .child(icon("copy").size(px(15.0)).text_color(rgb(theme::INK)))
-                    .child("Copy")
+                    .child(if self.tool == Tool::Pick { "Copy text" } else { "Copy" })
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(|this, _, window, cx| this.finish(Action::Copy, window, cx)),
+                        cx.listener(|this, _, window, cx| this.copy(window, cx)),
                     ),
             )
     }
@@ -1200,6 +1489,27 @@ impl Overlay {
                 cx,
             );
         };
+        // GLINT_HOVERTEST: только навести курсор — для снимка подсветки окна и лупы.
+        if std::env::var_os("GLINT_HOVERTEST").is_some() {
+            let at = MouseMoveEvent { position: gp(p(700.0, 300.0)), pressed_button: None, modifiers: m };
+            self.on_move(&at, window, cx);
+            cx.notify();
+            return;
+        }
+        // GLINT_PICKTEST: выделить область и включить режим выделения текста.
+        if std::env::var_os("GLINT_PICKTEST").is_some() {
+            drag(self, &[p(180.0, 140.0), p(600.0, 400.0), p(1130.0, 690.0)], window, cx);
+            self.tool = Tool::Pick;
+            cx.notify();
+            return;
+        }
+        // GLINT_OCRTEST: выделить окно под точкой кликом и распознать в нём текст.
+        if std::env::var_os("GLINT_OCRTEST").is_some() {
+            drag(self, &[p(700.0, 300.0)], window, cx);
+            eprintln!("window selection: {:?}", self.sel);
+            self.finish(Action::Text, window, cx);
+            return;
+        }
         let wob = |i: usize| ((i * 7919) % 13) as f32 / 13.0 * 5.0 - 2.5;
         drag(self, &[p(180.0, 140.0), p(600.0, 400.0), p(1130.0, 690.0)], window, cx);
 
@@ -1251,6 +1561,10 @@ impl Overlay {
         self.color = 0xFFD60A;
         let hl: Vec<P> = (0..40).map(|i| p(700.0 + i as f32 * 4.0, 470.0 + wob(i))).collect();
         drag(self, &hl, window, cx);
+
+        self.tool = Tool::Blur;
+        drag(self, &[p(185.0, 350.0), p(420.0, 440.0)], window, cx);
+        drag(self, &[p(940.0, 560.0), p(1300.0, 800.0)], window, cx);
 
         self.tool = Tool::Text;
         self.color = 0xFF3B5C;
@@ -1318,6 +1632,37 @@ impl Overlay {
 
     /// Первый Esc завершает ввод текста, второй — копирует выделение и закрывает оверлей.
     pub fn selftest_finish(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // GLINT_PICKTEST: протянуть мышью от третьего слова до пятнадцатого и оставить оверлей открытым.
+        if std::env::var_os("GLINT_PICKTEST").is_some() {
+            let centers: Vec<P> = self
+                .ocr
+                .iter()
+                .flat_map(|o| &o.words)
+                .map(|w| p(w.r.x + w.r.w / 2.0, w.r.y + w.r.h / 2.0))
+                .collect();
+            eprintln!("words: {}", centers.len());
+            if centers.len() > 3 {
+                let m = gpui::Modifiers::default();
+                let (a, b) = (centers[2], centers[15.min(centers.len() - 1)]);
+                let down = MouseDownEvent {
+                    button: MouseButton::Left,
+                    position: gp(a),
+                    modifiers: m,
+                    click_count: 1,
+                    first_mouse: false,
+                };
+                self.on_down(&down, window, cx);
+                let mv = MouseMoveEvent { position: gp(b), pressed_button: Some(MouseButton::Left), modifiers: m };
+                self.on_move(&mv, window, cx);
+                let up = MouseUpEvent { button: MouseButton::Left, position: gp(b), modifiers: m, click_count: 1 };
+                self.on_up(&up, window, cx);
+                eprintln!("pick: {:?}", self.pick);
+                if std::env::var_os("GLINT_PICKCOPY").is_some() {
+                    self.copy(window, cx);
+                }
+            }
+            return;
+        }
         for _ in 0..2 {
             if self.closed {
                 break;
@@ -1338,7 +1683,14 @@ impl Overlay {
 impl Render for Overlay {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let entity = cx.entity();
+        self.ensure_blurs();
+        self.ensure_ocr(cx);
         let snap = self.snapshot();
+        let pointer = if self.tool == Tool::Pick && self.sel.is_some() {
+            CursorStyle::IBeam
+        } else {
+            CursorStyle::Crosshair
+        };
         let show_toolbar = self.sel.is_some() && !matches!(self.drag, Drag::NewSel { .. });
         let toolbar = self
             .sel
@@ -1372,7 +1724,7 @@ impl Render for Overlay {
             .size_full()
             .relative()
             .track_focus(&self.focus)
-            .cursor(CursorStyle::Crosshair)
+            .cursor(pointer)
             .on_key_down(cx.listener(Self::on_key))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_down))
             .on_mouse_down(MouseButton::Right, cx.listener(Self::on_right))
@@ -1604,8 +1956,8 @@ fn paint(snap: &Snap, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App)
     let (ww, wh) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
 
     // Затемнение вне выделения.
-    let dim = color(0x000000, 0.5);
-    match &snap.sel {
+    let dim = color(0x000000, if snap.sel.is_some() { 0.5 } else { 0.45 });
+    match snap.sel.as_ref().or(snap.hover.as_ref()) {
         None => window.paint_quad(fill(bounds, color(0x000000, 0.35))),
         Some(s) => {
             let parts = [
@@ -1623,8 +1975,33 @@ fn paint(snap: &Snap, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App)
     // Аннотации — только внутри выделенной области.
     if let Some(sel) = &snap.sel {
         window.with_content_mask(Some(ContentMask { bounds: rect(sel) }), |window| {
+            // Размытие — под остальными аннотациями, как и в готовом снимке.
+            for shape in &snap.shapes {
+                if let Kind::Blur(a, b) = &shape.kind {
+                    let key = shape.width.to_bits();
+                    if let Some(layer) = snap.blurs.iter().find(|l| l.key == key) {
+                        let area = rect(&R::from_points(*a, *b));
+                        let full = Bounds {
+                            origin: bounds.origin,
+                            size: size(px(layer.w), px(layer.h)),
+                        };
+                        window.with_content_mask(Some(ContentMask { bounds: area }), |window| {
+                            let _ = window.paint_image(
+                                full,
+                                Corners::default(),
+                                layer.image.clone(),
+                                0,
+                                false,
+                            );
+                        });
+                    }
+                }
+            }
             for (i, shape) in snap.shapes.iter().enumerate() {
                 let c = color(shape.color, shape.alpha);
+                if matches!(shape.kind, Kind::Blur(..)) {
+                    continue;
+                }
                 if let Kind::Text {
                     at,
                     text,
@@ -1733,7 +2110,47 @@ fn paint(snap: &Snap, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App)
                     }
                 }
             }
+            // Режим текста: распознанные слова подсвечены, выделенные — залиты по строкам.
+            if snap.pick_mode {
+                for w in &snap.words {
+                    window.paint_quad(quad(
+                        rect(&R { x: w.r.x - 1.5, y: w.r.y - 1.5, w: w.r.w + 3.0, h: w.r.h + 3.0 }),
+                        px(3.0),
+                        color(0xFFFFFF, 0.16),
+                        px(0.0),
+                        color(0, 0.0),
+                        BorderStyle::default(),
+                    ));
+                }
+                if let Some((a, b)) = snap.pick {
+                    let (a, b) = (a.min(b), a.max(b).min(snap.words.len().saturating_sub(1)));
+                    let mut i = a;
+                    while i <= b && i < snap.words.len() {
+                        let line = snap.words[i].line;
+                        let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+                        while i <= b && snap.words[i].line == line {
+                            let r = &snap.words[i].r;
+                            x0 = x0.min(r.x);
+                            y0 = y0.min(r.y);
+                            x1 = x1.max(r.right());
+                            y1 = y1.max(r.bottom());
+                            i += 1;
+                        }
+                        window.paint_quad(quad(
+                            rect(&R { x: x0 - 2.0, y: y0 - 2.0, w: x1 - x0 + 4.0, h: y1 - y0 + 4.0 }),
+                            px(3.0),
+                            color(0x2F7BFF, 0.45),
+                            px(0.0),
+                            color(0, 0.0),
+                            BorderStyle::default(),
+                        ));
+                    }
+                }
+            }
         });
+        if let Some(note) = snap.note {
+            paint_label(note, p(sel.x + 8.0, sel.y + 8.0), window, cx);
+        }
     }
 
     let accent = color(theme::WHITE, 1.0);
@@ -1781,6 +2198,19 @@ fn paint(snap: &Snap, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App)
             paint_label(&label, p(lx, ly), window, cx);
         }
         None => {
+            // Окно под курсором: клик выделит его целиком.
+            if let Some(h) = &snap.hover {
+                // лёгкая вуаль, чтобы и на полноэкранном окне было видно, что экран «заморожен»
+                window.paint_quad(fill(rect(h), color(0x000000, 0.12)));
+                window.paint_quad(quad(
+                    rect(h),
+                    px(0.0),
+                    color(0, 0.0),
+                    px(2.0),
+                    accent,
+                    BorderStyle::default(),
+                ));
+            }
             // Перекрестие до начала выделения.
             let line = color(0xFFFFFF, 0.35);
             let c = snap.cursor;
@@ -1790,6 +2220,131 @@ fn paint(snap: &Snap, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App)
             }
         }
     }
+    if snap.selecting {
+        paint_loupe(snap, ww, wh, window, cx);
+    }
+}
+
+/// Слово, в рамку которого (с небольшим запасом) попадает точка.
+fn word_hit(words: &[PickWord], q: P) -> Option<usize> {
+    words.iter().position(|w| {
+        q.x >= w.r.x - 3.0 && q.x <= w.r.right() + 3.0 && q.y >= w.r.y - 3.0 && q.y <= w.r.bottom() + 3.0
+    })
+}
+
+/// Ближайшее к точке слово: сначала выбирается строка по вертикали, затем слово в ней.
+fn word_near(words: &[PickWord], q: P) -> Option<usize> {
+    let gap = |lo: f32, hi: f32, v: f32| (lo - v).max(v - hi).max(0.0);
+    (0..words.len()).min_by(|&i, &j| {
+        let score = |k: usize| {
+            let r = &words[k].r;
+            gap(r.y, r.bottom(), q.y) * 6.0 + gap(r.x, r.right(), q.x)
+        };
+        score(i).total_cmp(&score(j))
+    })
+}
+
+/// Цвет пикселя снимка (BGRA) в виде 0xRRGGBB.
+fn pixel(bytes: &[u8], w: i32, h: i32, x: i32, y: i32) -> Option<u32> {
+    if x < 0 || y < 0 || x >= w || y >= h {
+        return None;
+    }
+    let i = (y as usize * w as usize + x as usize) * 4;
+    let px = bytes.get(i..i + 3)?;
+    Some((px[2] as u32) << 16 | (px[1] as u32) << 8 | px[0] as u32)
+}
+
+/// Лупа у курсора: увеличенные пиксели снимка, центральный обведён, под ними — его цвет.
+fn paint_loupe(snap: &Snap, ww: f32, wh: f32, window: &mut Window, cx: &mut App) {
+    let c = snap.cursor;
+    if c.x < 0.0 || c.y < 0.0 || c.x > ww || c.y > wh {
+        return;
+    }
+    let Some(bytes) = snap.image.as_bytes(0) else { return };
+    let (iw, ih) = (snap.img_w as i32, snap.img_h as i32);
+    let cx_px = ((c.x * snap.scale) as i32).clamp(0, iw - 1);
+    let cy_px = ((c.y * snap.scale) as i32).clamp(0, ih - 1);
+    let half = LOUPE_CELLS / 2;
+    let side = LOUPE_CELLS as f32 * LOUPE_CELL;
+    let total_h = side + 28.0;
+
+    let mut x = c.x + 24.0;
+    if x + side + 8.0 > ww {
+        x = c.x - 24.0 - side;
+    }
+    let mut y = c.y + 24.0;
+    if y + total_h + 8.0 > wh {
+        y = c.y - 24.0 - total_h;
+    }
+    // по границам физических пикселей, чтобы между клетками не было щелей
+    let snap_px = |v: f32| (v * snap.scale).round() / snap.scale;
+    let (x, y) = (snap_px(x), snap_px(y));
+
+    window.paint_quad(quad(
+        rect(&R { x: x - 3.0, y: y - 3.0, w: side + 6.0, h: total_h + 6.0 }),
+        px(6.0),
+        color(theme::PANEL, 1.0),
+        px(1.0),
+        color(0xFFFFFF, 0.85),
+        BorderStyle::default(),
+    ));
+    for j in 0..LOUPE_CELLS {
+        for i in 0..LOUPE_CELLS {
+            let Some(col) = pixel(bytes, iw, ih, cx_px + i - half, cy_px + j - half) else {
+                continue;
+            };
+            window.paint_quad(fill(
+                rect(&R {
+                    x: x + i as f32 * LOUPE_CELL,
+                    y: y + j as f32 * LOUPE_CELL,
+                    w: LOUPE_CELL,
+                    h: LOUPE_CELL,
+                }),
+                color(col, 1.0),
+            ));
+        }
+    }
+    let (mx, my) = (x + half as f32 * LOUPE_CELL, y + half as f32 * LOUPE_CELL);
+    for (grow, col) in [(2.0, 0x000000), (1.0, 0xFFFFFF)] {
+        window.paint_quad(quad(
+            rect(&R {
+                x: mx - grow,
+                y: my - grow,
+                w: LOUPE_CELL + grow * 2.0,
+                h: LOUPE_CELL + grow * 2.0,
+            }),
+            px(0.0),
+            color(0, 0.0),
+            px(1.0),
+            color(col, 1.0),
+            BorderStyle::default(),
+        ));
+    }
+
+    let col = pixel(bytes, iw, ih, cx_px, cy_px).unwrap_or(0);
+    window.paint_quad(quad(
+        rect(&R { x: x + 4.0, y: y + side + 7.0, w: 14.0, h: 14.0 }),
+        px(3.0),
+        color(col, 1.0),
+        px(1.0),
+        color(0xFFFFFF, 0.5),
+        BorderStyle::default(),
+    ));
+    let label = format!("#{col:06X}");
+    let shaped = window.text_system().shape_line(
+        SharedString::from(label.clone()),
+        px(12.0),
+        &[TextRun {
+            len: label.len(),
+            font: text_font(FontWeight::MEDIUM),
+            color: color(0xFFFFFF, 1.0),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        }],
+        None,
+    );
+    let _ = shaped.paint(point(px(x + 25.0), px(y + side + 5.0)), px(18.0), window, cx);
 }
 
 fn paint_label(text: &str, at: P, window: &mut Window, cx: &mut App) {
