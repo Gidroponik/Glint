@@ -21,15 +21,17 @@ Get `glint.exe` from [Releases](https://github.com/Gidroponik/Glint/releases). N
 
 **Annotate**
 
-- Pen, marker, line, arrow, rectangle, ellipse, text and blur. Eight colors, three thicknesses.
+- Pen, marker, line, arrow, rectangle, ellipse, text, blur and spotlight. Eight colors, three thicknesses.
 - Freehand strokes are smoothed. Rough lines, circles and rectangles snap to clean shapes.
 - Text is set in Montserrat: six weights, any size, optional outline. It can be edited, recolored and moved after typing.
 - Blur hides parts of the capture. The thickness buttons set its strength.
+- Spotlight does the opposite: it dims everything except the rectangles you mark, so the eye goes where you want.
 - Undo and redo.
 
 **Text and color**
 
 - Text on the capture is selectable: switch to text mode, drag over the words and copy them. Recognition uses the OCR engine built into Windows and the languages installed in it.
+- QR codes on the screen are read automatically, including stylized ones with rounded dots and a logo. Each code is outlined as soon as the overlay opens, and a click on its label copies the link or text.
 - Color picker: press `C` or right click before selecting to copy the color under the cursor as `#RRGGBB`.
 
 **Output**
@@ -37,6 +39,7 @@ Get `glint.exe` from [Releases](https://github.com/Gidroponik/Glint/releases). N
 - The capture goes to the clipboard as a bitmap and as a file in the chosen format: PNG, PNG-8, JPEG or WebP.
 - Optional saving of every capture to a folder, or "Save as" for a single one.
 - Copy right after selecting, for quick captures without the editor.
+- Pin a capture on top of other windows to keep it in view. Drag it to move, pull a corner or scroll to resize, double-click to close.
 
 **App**
 
@@ -72,14 +75,17 @@ Drag the header to move the window.
 | `Ctrl+Shift+F` | Capture the full screen (default, rebindable) |
 | `Esc` / `Enter` | Copy the selection and close. Without a selection, `Esc` closes. |
 | `Ctrl+S` | Save as |
+| `Ctrl+P` | Pin the selection on top of other windows |
 | `Ctrl+T` | Text mode: drag over recognized words, then copy. Double-click selects a line, `Ctrl+A` selects all. |
 | `C` or right click before selecting | Copy the color under the cursor as `#RRGGBB` |
 | Click before selecting | Select the window under the cursor |
 | `Ctrl+Z` / `Ctrl+Y` | Undo / redo |
 | `Ctrl+A` | Select the whole screen |
-| `1`–`9`, `0` | Switch tool |
+| `1`–`9`, `0` | Switch tool (`0` is text mode) |
 | `Shift` while drawing | Constrain to 45° steps, squares and circles |
 | Right click | Clear the selection |
+
+A pinned capture: drag to move, pull a corner or use the mouse wheel to resize, `Ctrl+C` to copy, double-click, right click or `Esc` to close.
 
 While typing text: arrows, `Home`/`End`, `Shift` to select, `Ctrl+A`, `Ctrl+C`/`X`/`V`. Double-click a finished label to edit it again; drag it to move.
 

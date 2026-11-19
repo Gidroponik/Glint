@@ -10,6 +10,8 @@ mod hotkeys;
 mod icon;
 mod ocr;
 mod overlay;
+mod pin;
+mod qr;
 mod settings;
 mod shapes;
 mod theme;
@@ -33,6 +35,8 @@ pub enum Action {
     Save,
     /// Распознать текст в выделенной области и скопировать его.
     Text,
+    /// Закрепить снимок поверх окон.
+    Pin,
 }
 
 pub struct AppState {
@@ -84,6 +88,24 @@ fn main() {
         if std::env::var_os("GLINT_SELFTEST").is_some() {
             selftest(cx);
         }
+        // В простое (нет ни одного видимого окна) возвращаем системе неиспользуемую память:
+        // приложение почти всё время сидит в трее и не должно держать её за собой.
+        cx.spawn(async move |cx| {
+            let mut idle = 0u32;
+            loop {
+                cx.background_executor().timer(Duration::from_secs(4)).await;
+                if win::has_visible_window() {
+                    idle = 0;
+                } else {
+                    idle += 1;
+                    // один раз после того, как всё закрылось и фоновые задачи улеглись
+                    if idle == 2 {
+                        win::trim_memory();
+                    }
+                }
+            }
+        })
+        .detach();
         cx.spawn(async move |cx| {
             while let Ok(ev) = rx.recv().await {
                 let _ = cx.update(|cx| handle_event(ev, cx));
@@ -162,6 +184,26 @@ fn open_overlay(cx: &mut App) -> Option<WindowHandle<overlay::Overlay>> {
         return None;
     };
     let t_capture = t0.elapsed();
+    #[allow(unused_mut)]
+    let mut shot = shot;
+    // Отладка: вместо экрана — цветная сетка, чтобы проверять отрисовку на тёмном экране.
+    #[cfg(debug_assertions)]
+    if std::env::var_os("GLINT_FAKESHOT").is_some() {
+        let w = shot.w as usize;
+        for (i, px) in shot.bgra.chunks_exact_mut(4).enumerate() {
+            let (x, y) = (i % w, i / w);
+            let grid = x % 60 < 2 || y % 60 < 2;
+            px.copy_from_slice(&[(x / 8) as u8, (y / 6) as u8, if grid { 40 } else { 230 }, 255]);
+        }
+        // GLINT_FAKEQR=<png> — картинка (например, QR-код), вставленная в этот «экран»
+        if let Some(pic) = std::env::var_os("GLINT_FAKEQR").and_then(|p| image::open(p).ok()) {
+            let pic = pic.to_rgba8();
+            for (x, y, c) in pic.enumerate_pixels() {
+                let o = ((450 + y as usize) * w + 900 + x as usize) * 4;
+                shot.bgra[o..o + 4].copy_from_slice(&[c[2], c[1], c[0], 255]);
+            }
+        }
+    }
     let (w, h, scale) = (shot.w, shot.h, shot.scale);
     let buffer = image::RgbaImage::from_raw(w, h, shot.bgra)?;
     // RenderImage хранит пиксели в BGRA — ровно то, что отдаёт GDI, без конвертации.

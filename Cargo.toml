@@ -1,6 +1,6 @@
 [package]
 name = "glint"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "Screenshot tool for Windows with on-screen annotation"
 
@@ -19,6 +19,7 @@ dirs = "6"
 lyon = "1"
 windows-registry = "0.5"
 smallvec = "1"
+rxing = { version = "0.9.4", default-features = false, features = ["decoders", "qrcode", "multi_barcode_readers", "encoding_rs"] }
 
 [dependencies.windows]
 version = "0.61"
@@ -46,6 +47,7 @@ features = [
 
 [dev-dependencies]
 arboard = "3"
+qrcode = { version = "0.14.1", default-features = false }
 
 [build-dependencies]
 embed-resource = "3"

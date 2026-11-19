@@ -26,11 +26,13 @@ pub enum Tool {
     Ellipse,
     Text,
     Blur,
+    /// Подсветка: затемняет всё вокруг отмеченных прямоугольников.
+    Spot,
     /// Выделение распознанного текста прямо на снимке.
     Pick,
 }
 
-const TOOLS: [(Tool, &str); 10] = [
+const TOOLS: [(Tool, &str); 11] = [
     (Tool::Select, "select"),
     (Tool::Pen, "pen"),
     (Tool::Marker, "marker"),
@@ -40,17 +42,20 @@ const TOOLS: [(Tool, &str); 10] = [
     (Tool::Ellipse, "ellipse"),
     (Tool::Text, "text"),
     (Tool::Blur, "blur"),
+    (Tool::Spot, "spot"),
     (Tool::Pick, "ocr"),
 ];
 
 const WIDTHS: [f32; 3] = [2.0, 4.0, 8.0];
-const TOOLBAR_W: f32 = 1010.0;
+const TOOLBAR_W: f32 = 1090.0;
 /// Лупа: число увеличенных пикселей по стороне и размер одного из них.
 const LOUPE_CELLS: i32 = 15;
 const LOUPE_CELL: f32 = 8.0;
 /// Во сколько раз уменьшена размытая копия снимка для предпросмотра.
 const BLUR_DOWNSCALE: u32 = 4;
 const TOOLBAR_H: f32 = 46.0;
+/// Цвет рамки и значка найденного QR-кода.
+const QR_ACCENT: u32 = 0x30D158;
 const HANDLE_HIT: f32 = 9.0;
 
 enum Drag {
@@ -103,9 +108,18 @@ pub struct Overlay {
     ocr_failed: Option<String>,
     /// Выделенные слова: (якорь, конец) — индексы в `ocr.words`.
     pick: Option<(usize, usize)>,
+    /// QR-коды, найденные на снимке.
+    codes: Vec<QrHit>,
     auto_shapes: bool,
     instant: bool,
     closed: bool,
+}
+
+/// QR-код на снимке: содержимое и рамка в координатах оверлея.
+#[derive(Clone)]
+struct QrHit {
+    text: String,
+    r: R,
 }
 
 /// Распознанное слово: текст, рамка в координатах оверлея и номер строки.
@@ -143,6 +157,8 @@ struct Snap {
     words: Vec<PickWord>,
     pick: Option<(usize, usize)>,
     note: Option<&'static str>,
+    /// Рамки QR-кодов внутри выделенной области.
+    codes: Vec<R>,
     sel: Option<R>,
     shapes: Vec<Shape>,
     editing: Option<usize>,
@@ -177,6 +193,30 @@ impl Overlay {
         windows: Vec<R>,
         cx: &mut Context<Self>,
     ) -> Self {
+        // QR-коды ищем по всему снимку один раз, в фоне.
+        let shot = image.clone();
+        cx.spawn(async move |this, cx| {
+            let found = cx
+                .background_executor()
+                .spawn(async move {
+                    match shot.as_bytes(0) {
+                        Some(bytes) => crate::qr::scan(bytes, img_w, img_h),
+                        None => Vec::new(),
+                    }
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.codes = found
+                    .into_iter()
+                    .map(|c| QrHit {
+                        text: c.text,
+                        r: R { x: c.x / scale, y: c.y / scale, w: c.w / scale, h: c.h / scale },
+                    })
+                    .collect();
+                cx.notify();
+            });
+        })
+        .detach();
         let s = &cx.global::<AppState>().settings;
         Self {
             image,
@@ -207,6 +247,7 @@ impl Overlay {
             ocr_pending: None,
             ocr_failed: None,
             pick: None,
+            codes: Vec::new(),
             auto_shapes: s.auto_shapes,
             instant: s.instant_copy,
             closed: false,
@@ -518,6 +559,33 @@ impl Overlay {
         crate::deliver_plain_text(text, cx);
     }
 
+    /// QR-коды, которые сейчас показаны: до выбора области — все найденные на экране,
+    /// после — те, что попали в область. Возвращает (номер, рамка).
+    fn visible_codes(&self) -> Vec<(usize, R)> {
+        if matches!(self.drag, Drag::NewSel { .. }) {
+            return Vec::new();
+        }
+        let sel = self.sel;
+        self.codes
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| {
+                sel.is_none_or(|s| s.contains(p(c.r.x + c.r.w / 2.0, c.r.y + c.r.h / 2.0)))
+            })
+            .map(|(i, c)| (i, c.r))
+            .collect()
+    }
+
+    /// Копирует содержимое QR-кода и закрывает оверлей.
+    fn copy_code(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(text) = self.codes.get(i).map(|c| c.text.clone()) else { return };
+        self.close(window, cx);
+        match export::copy_text(&text) {
+            Ok(()) => crate::toast::show("QR code copied", clip(&text, 70), true, cx),
+            Err(e) => crate::toast::show("Copy failed", e, false, cx),
+        }
+    }
+
     /// Верхнее окно, в которое попадает точка.
     fn window_at(&self, q: P) -> Option<R> {
         self.windows.iter().find(|w| w.contains(q)).copied()
@@ -739,6 +807,7 @@ impl Overlay {
                         Kind::Ellipse(a, if shift { shapes::snap_square(a, q) } else { q })
                     }
                     Tool::Blur => Kind::Blur(a, if shift { shapes::snap_square(a, q) } else { q }),
+                    Tool::Spot => Kind::Spot(a, if shift { shapes::snap_square(a, q) } else { q }),
                     Tool::Select | Tool::Text | Tool::Pick => return,
                 };
                 if let Some(cur) = &mut self.current {
@@ -786,7 +855,7 @@ impl Overlay {
                     let keep = match &shape.kind {
                         Kind::Stroke(pts) | Kind::Curve(pts) => !pts.is_empty(),
                         Kind::Line(a, b) | Kind::Arrow(a, b) => a.dist(*b) > 2.0,
-                        Kind::Rect(a, b) | Kind::Ellipse(a, b) | Kind::Blur(a, b) => {
+                        Kind::Rect(a, b) | Kind::Ellipse(a, b) | Kind::Blur(a, b) | Kind::Spot(a, b) => {
                             (a.x - b.x).abs() > 2.0 && (a.y - b.y).abs() > 2.0
                         }
                         Kind::Text { .. } => true,
@@ -957,6 +1026,8 @@ impl Overlay {
                 self.copy(window, cx);
             } else if win::vk_down(0x53) {
                 self.finish(Action::Save, window, cx);
+            } else if win::vk_down(0x50) {
+                self.finish(Action::Pin, window, cx);
             } else if win::vk_down(0x54) {
                 if self.sel.is_some() {
                     self.commit_text();
@@ -1025,8 +1096,11 @@ impl Overlay {
                 _ => self.undo(),
             },
             "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "0" if self.sel.is_some() => {
-                let i = (key.parse::<usize>().unwrap() + 9) % 10;
-                self.tool = TOOLS[i].0;
+                // 1–9 — первые девять инструментов, 0 — режим текста
+                self.tool = match key.parse::<usize>().unwrap() {
+                    0 => Tool::Pick,
+                    n => TOOLS[n - 1].0,
+                };
             }
             _ => {}
         }
@@ -1075,8 +1149,13 @@ impl Overlay {
         // Текст распознаём по чистому снимку: аннотации только мешали бы.
         let shapes: &[Shape] = if action == Action::Text { &[] } else { &self.shapes };
         let rendered = export::render(bytes, self.img_w, crop, s, shapes);
+        // положение области на экране в физических пикселях — туда встанет закреплённый снимок
+        let (ox, oy) = win::hwnd_of(window).and_then(win::origin).unwrap_or((0, 0));
+        let at = (ox + crop.x as i32, oy + crop.y as i32);
         self.close(window, cx);
-        if action == Action::Text {
+        if action == Action::Pin {
+            cx.defer(move |cx| crate::pin::open(rendered, at.0, at.1, cx));
+        } else if action == Action::Text {
             crate::deliver_text(rendered, cx);
         } else {
             crate::deliver(rendered, action, cx);
@@ -1099,6 +1178,7 @@ impl Overlay {
                 _ => Vec::new(),
             },
             pick: self.pick,
+            codes: self.visible_codes().into_iter().map(|(_, r)| r).collect(),
             note: if self.tool != Tool::Pick {
                 None
             } else if self.ocr_pending.is_some() || self.ocr.is_none() {
@@ -1418,6 +1498,10 @@ impl Overlay {
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| this.close(window, cx)),
             ))
+            .child(btn(false).child(glyph("pin", false, true)).on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| this.finish(Action::Pin, window, cx)),
+            ))
             .child(btn(false).child(glyph("save", false, true)).on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| this.finish(Action::Save, window, cx)),
@@ -1493,6 +1577,21 @@ impl Overlay {
         if std::env::var_os("GLINT_HOVERTEST").is_some() {
             let at = MouseMoveEvent { position: gp(p(700.0, 300.0)), pressed_button: None, modifiers: m };
             self.on_move(&at, window, cx);
+            cx.notify();
+            return;
+        }
+        // GLINT_SPOTTEST: область, две подсветки, стрелка и условный QR-код — для снимка.
+        if std::env::var_os("GLINT_SPOTTEST").is_some() {
+            drag(self, &[p(180.0, 140.0), p(600.0, 400.0), p(1130.0, 690.0)], window, cx);
+            self.tool = Tool::Spot;
+            drag(self, &[p(260.0, 200.0), p(560.0, 360.0)], window, cx);
+            drag(self, &[p(500.0, 320.0), p(760.0, 470.0)], window, cx);
+            self.tool = Tool::Arrow;
+            drag(self, &[p(900.0, 600.0), p(770.0, 480.0)], window, cx);
+            self.codes.push(QrHit {
+                text: "https://example.com/some/long/link?with=params&and=more-text".into(),
+                r: R { x: 880.0, y: 220.0, w: 120.0, h: 120.0 },
+            });
             cx.notify();
             return;
         }
@@ -1632,6 +1731,11 @@ impl Overlay {
 
     /// Первый Esc завершает ввод текста, второй — копирует выделение и закрывает оверлей.
     pub fn selftest_finish(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // GLINT_PINTEST: закрепить выделенную область поверх окон.
+        if std::env::var_os("GLINT_PINTEST").is_some() {
+            self.finish(Action::Pin, window, cx);
+            return;
+        }
         // GLINT_PICKTEST: протянуть мышью от третьего слова до пятнадцатого и оставить оверлей открытым.
         if std::env::var_os("GLINT_PICKTEST").is_some() {
             let centers: Vec<P> = self
@@ -1696,6 +1800,46 @@ impl Render for Overlay {
             .sel
             .filter(|_| show_toolbar)
             .map(|sel| self.render_toolbar(&sel, cx));
+        let (ww, wh) = self.win_size();
+        let chips: Vec<_> = self
+            .visible_codes()
+            .into_iter()
+            .map(|(i, r)| {
+                let text = clip(&self.codes[i].text, 44);
+                let y = if r.bottom() + 40.0 <= wh { r.bottom() + 6.0 } else { r.y - 36.0 };
+                div()
+                    .absolute()
+                    .left(px(r.x.clamp(4.0, (ww - 120.0).max(4.0))))
+                    .top(px(y.max(4.0)))
+                    .h(px(30.0))
+                    .px(px(10.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(7.0))
+                    .rounded(px(7.0))
+                    .bg(rgb(theme::PANEL))
+                    .border_1()
+                    .border_color(rgb(QR_ACCENT))
+                    .shadow_lg()
+                    .occlude()
+                    .cursor(CursorStyle::PointingHand)
+                    .hover(|s| s.bg(rgb(theme::PANEL_HI)))
+                    .font_family(theme::UI_FONT)
+                    .text_size(px(12.0))
+                    .text_color(rgb(theme::TEXT))
+                    .child(icon("qr").size(px(18.0)).text_color(rgb(QR_ACCENT)))
+                    .child(text)
+                    .child(icon("copy").size(px(14.0)).text_color(rgb(theme::TEXT)))
+                    .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, window, cx| {
+                            cx.stop_propagation();
+                            this.copy_code(i, window, cx);
+                        }),
+                    )
+            })
+            .collect();
         let hint = self.sel.is_none().then(|| {
             div()
                 .absolute()
@@ -1750,6 +1894,7 @@ impl Render for Overlay {
                 .absolute()
                 .size_full(),
             )
+            .children(chips)
             .children(toolbar)
             .children(hint)
     }
@@ -1997,9 +2142,25 @@ fn paint(snap: &Snap, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App)
                     }
                 }
             }
+            // Подсветка: затемняем область вокруг отмеченных прямоугольников.
+            let spots: Vec<&Shape> =
+                snap.shapes.iter().filter(|s| matches!(s.kind, Kind::Spot(..))).collect();
+            if !spots.is_empty() {
+                let holes: Vec<R> = spots
+                    .iter()
+                    .filter_map(|s| match &s.kind {
+                        Kind::Spot(a, b) => Some(R::from_points(*a, *b)),
+                        _ => None,
+                    })
+                    .collect();
+                let alpha = spots.iter().map(|s| shapes::spot_alpha(s.width)).fold(0.0, f32::max);
+                for part in shapes::spot_dim(*sel, &holes) {
+                    window.paint_quad(fill(rect(&part), color(0x000000, alpha)));
+                }
+            }
             for (i, shape) in snap.shapes.iter().enumerate() {
                 let c = color(shape.color, shape.alpha);
-                if matches!(shape.kind, Kind::Blur(..)) {
+                if matches!(shape.kind, Kind::Blur(..) | Kind::Spot(..)) {
                     continue;
                 }
                 if let Kind::Text {
@@ -2151,6 +2312,17 @@ fn paint(snap: &Snap, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App)
         if let Some(note) = snap.note {
             paint_label(note, p(sel.x + 8.0, sel.y + 8.0), window, cx);
         }
+    }
+    // Найденные QR-коды обведены рамкой — и до выбора области, и внутри неё.
+    for r in &snap.codes {
+        window.paint_quad(quad(
+            rect(&R { x: r.x - 4.0, y: r.y - 4.0, w: r.w + 8.0, h: r.h + 8.0 }),
+            px(5.0),
+            color(0, 0.0),
+            px(2.0),
+            color(QR_ACCENT, 1.0),
+            BorderStyle::default(),
+        ));
     }
 
     let accent = color(theme::WHITE, 1.0);
@@ -2345,6 +2517,16 @@ fn paint_loupe(snap: &Snap, ww: f32, wh: f32, window: &mut Window, cx: &mut App)
         None,
     );
     let _ = shaped.paint(point(px(x + 25.0), px(y + side + 5.0)), px(18.0), window, cx);
+}
+
+/// Обрезает текст до `max` символов, заменяя переводы строк пробелами.
+fn clip(text: &str, max: usize) -> String {
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut out: String = flat.chars().take(max).collect();
+    if flat.chars().count() > max {
+        out.push('…');
+    }
+    out
 }
 
 fn paint_label(text: &str, at: P, window: &mut Window, cx: &mut App) {

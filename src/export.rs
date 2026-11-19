@@ -65,9 +65,25 @@ pub fn render(bgra: &[u8], img_w: u32, crop: Crop, scale: f32, shapes: &[Shape])
             blur_rect(&mut pixmap, bgra, img_w, crop, scale, rect, shape.width);
         }
     }
+    // Подсветка: затемняем всё, кроме отмеченных прямоугольников; фигуры рисуются поверх.
+    let spots: Vec<crate::shapes::R> = shapes
+        .iter()
+        .filter_map(|s| match &s.kind {
+            Kind::Spot(a, b) => Some(crate::shapes::R::from_points(*a, *b)),
+            _ => None,
+        })
+        .collect();
+    if !spots.is_empty() {
+        let alpha = shapes
+            .iter()
+            .filter(|s| matches!(s.kind, Kind::Spot(..)))
+            .map(|s| crate::shapes::spot_alpha(s.width))
+            .fold(0.0, f32::max);
+        dim_outside(&mut pixmap, crop, scale, &spots, alpha);
+    }
     for shape in shapes {
         let (r, g, b) = rgb(shape.color);
-        if matches!(shape.kind, Kind::Blur(..)) {
+        if matches!(shape.kind, Kind::Blur(..) | Kind::Spot(..)) {
             continue;
         }
         if let Kind::Text { at, text, size, weight, outline } = &shape.kind {
@@ -113,6 +129,44 @@ pub fn render(bgra: &[u8], img_w: u32, crop: Crop, scale: f32, shapes: &[Shape])
         w: crop.w,
         h: crop.h,
         rgba: pixmap.take(),
+    }
+}
+
+/// Затемняет всё изображение, кроме прямоугольников `holes` (логические координаты).
+fn dim_outside(pixmap: &mut sk::Pixmap, crop: Crop, scale: f32, holes: &[crate::shapes::R], alpha: f32) {
+    let (w, h) = (crop.w as usize, crop.h as usize);
+    let px = |v: f32, lo: u32, len: u32| {
+        (((v * scale).round().max(0.0) as u32).clamp(lo, lo + len) - lo) as usize
+    };
+    let cuts: Vec<(usize, usize, usize, usize)> = holes
+        .iter()
+        .map(|r| {
+            (
+                px(r.x, crop.x, crop.w),
+                px(r.right(), crop.x, crop.w),
+                px(r.y, crop.y, crop.h),
+                px(r.bottom(), crop.y, crop.h),
+            )
+        })
+        .collect();
+    let k = ((1.0 - alpha.clamp(0.0, 1.0)) * 256.0).round() as u32;
+    let mut lit = vec![false; w];
+    let data = pixmap.data_mut();
+    for row in 0..h {
+        lit.fill(false);
+        for &(x0, x1, y0, y1) in &cuts {
+            if row >= y0 && row < y1 && x1 > x0 {
+                lit[x0..x1].fill(true);
+            }
+        }
+        let line = &mut data[row * w * 4..(row + 1) * w * 4];
+        for (px, lit) in line.chunks_exact_mut(4).zip(&lit) {
+            if !lit {
+                for c in &mut px[..3] {
+                    *c = ((*c as u32 * k) >> 8) as u8;
+                }
+            }
+        }
     }
 }
 
@@ -564,6 +618,33 @@ Hello".into(),
         let i = ((7 + 3) * w + 5 + 4) as usize * 4;
         let o = (3 * 20 + 4) * 4;
         assert_eq!(&out.rgba[o..o + 4], &[bgra[i + 2], bgra[i + 1], bgra[i], 255]);
+    }
+
+    #[test]
+    fn spotlight_dims_everything_else() {
+        let (w, h) = (120u32, 80u32);
+        let bgra = vec![200u8; (w * h * 4) as usize];
+        let crop = Crop { x: 10, y: 10, w: 100, h: 60 };
+        let spot = Shape {
+            kind: Kind::Spot(p(15.0, 10.0), p(40.0, 30.0)),
+            color: 0,
+            width: 4.0,
+            alpha: 1.0,
+        };
+        let out = render(&bgra, w, crop, 2.0, &[spot]);
+        // прямоугольник 30..80 × 20..60 в пикселях снимка → 20..70 × 10..50 в кадре
+        for y in 0..60usize {
+            for x in 0..100usize {
+                let i = (y * 100 + x) * 4;
+                let inside = (20..70).contains(&x) && (10..50).contains(&y);
+                if inside {
+                    assert_eq!(out.rgba[i], 200, "dimmed inside at {x},{y}");
+                } else {
+                    assert!((95..115).contains(&out.rgba[i]), "wrong dim at {x},{y}: {}", out.rgba[i]);
+                }
+                assert_eq!(out.rgba[i + 3], 255);
+            }
+        }
     }
 
     #[test]

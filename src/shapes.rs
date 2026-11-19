@@ -60,6 +60,8 @@ pub enum Kind {
     Ellipse(P, P),
     /// Размытый прямоугольник: скрывает то, что под ним на снимке.
     Blur(P, P),
+    /// Подсветка: всё вокруг этого прямоугольника затемняется.
+    Spot(P, P),
     Text { at: P, text: String, size: f32, weight: u16, outline: bool },
 }
 
@@ -87,6 +89,46 @@ pub struct Outline {
 }
 
 pub const TEXT_LINE_HEIGHT: f32 = 1.3;
+
+/// Сила затемнения вокруг подсвеченных областей для выбранной толщины инструмента.
+pub fn spot_alpha(width: f32) -> f32 {
+    (0.3 + width * 0.045).min(0.75)
+}
+
+/// Прямоугольники, покрывающие `area` за вычетом всех `holes` (для затемнения вокруг подсветки).
+pub fn spot_dim(area: R, holes: &[R]) -> Vec<R> {
+    let mut ys = vec![area.y, area.bottom()];
+    for h in holes {
+        ys.push(h.y.clamp(area.y, area.bottom()));
+        ys.push(h.bottom().clamp(area.y, area.bottom()));
+    }
+    ys.sort_by(f32::total_cmp);
+    ys.dedup();
+    let mut out = Vec::new();
+    for band in ys.windows(2) {
+        let (y0, y1) = (band[0], band[1]);
+        let mid = (y0 + y1) / 2.0;
+        // отрезки по X, закрытые подсветкой в этой полосе
+        let mut cuts: Vec<(f32, f32)> = holes
+            .iter()
+            .filter(|h| h.y <= mid && h.bottom() >= mid)
+            .map(|h| (h.x.max(area.x), h.right().min(area.right())))
+            .filter(|(a, b)| b > a)
+            .collect();
+        cuts.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut x = area.x;
+        for (a, b) in cuts {
+            if a > x {
+                out.push(R { x, y: y0, w: a - x, h: y1 - y0 });
+            }
+            x = x.max(b);
+        }
+        if area.right() > x {
+            out.push(R { x, y: y0, w: area.right() - x, h: y1 - y0 });
+        }
+    }
+    out
+}
 
 /// Число смещённых копий текста, из которых складывается обводка.
 pub const OUTLINE_STEPS: usize = 20;
@@ -157,7 +199,7 @@ impl Shape {
                     fill: false,
                 }]
             }
-            Kind::Blur(..) | Kind::Text { .. } => vec![],
+            Kind::Blur(..) | Kind::Spot(..) | Kind::Text { .. } => vec![],
         }
     }
 }
@@ -488,6 +530,22 @@ mod tests {
 
     fn wobble(i: usize) -> f32 {
         ((i * 7919) % 13) as f32 / 13.0 * 3.0 - 1.5
+    }
+
+    #[test]
+    fn spot_dim_covers_everything_but_holes() {
+        let area = R { x: 0.0, y: 0.0, w: 100.0, h: 60.0 };
+        let holes = [R { x: 10.0, y: 10.0, w: 30.0, h: 20.0 }, R { x: 30.0, y: 20.0, w: 40.0, h: 30.0 }];
+        let parts = spot_dim(area, &holes);
+        let inside = |rs: &[R], q: P| rs.iter().filter(|r| q.x > r.x && q.x < r.right() && q.y > r.y && q.y < r.bottom()).count();
+        for yi in 0..60 {
+            for xi in 0..100 {
+                let q = p(xi as f32 + 0.5, yi as f32 + 0.5);
+                let lit = inside(&holes, q) > 0;
+                assert_eq!(inside(&parts, q), if lit { 0 } else { 1 }, "{q:?}");
+            }
+        }
+        assert_eq!(spot_dim(area, &[]), vec![area]);
     }
 
     #[test]

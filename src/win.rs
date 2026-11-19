@@ -109,6 +109,94 @@ pub fn window_rects() -> Vec<(i32, i32, i32, i32)> {
     out
 }
 
+/// Левый верхний угол окна на экране, в физических пикселях.
+pub fn origin(hwnd: HWND) -> Option<(i32, i32)> {
+    use windows::Win32::Foundation::RECT;
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
+    let mut r = RECT::default();
+    unsafe { GetWindowRect(hwnd, &mut r).ok()? };
+    Some((r.left, r.top))
+}
+
+/// Есть ли у приложения видимые окна (оверлей, закреплённые снимки, окно настроек).
+pub fn has_visible_window() -> bool {
+    use windows::Win32::Foundation::LPARAM;
+    use windows::Win32::System::Threading::GetCurrentProcessId;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetWindowThreadProcessId, IsWindowVisible,
+    };
+    use windows::core::BOOL;
+
+    unsafe extern "system" fn each(hwnd: HWND, lp: LPARAM) -> BOOL {
+        unsafe {
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(hwnd, Some(&mut pid));
+            if pid == GetCurrentProcessId() && IsWindowVisible(hwnd).as_bool() {
+                *(lp.0 as *mut bool) = true;
+                return false.into();
+            }
+            true.into()
+        }
+    }
+    let mut found = false;
+    unsafe {
+        let _ = EnumWindows(Some(each), LPARAM(&mut found as *mut _ as isize));
+    }
+    found
+}
+
+/// Отдаёт системе физическую память, которой процесс сейчас не пользуется.
+/// Нужные страницы подгрузятся обратно при первом обращении.
+pub fn trim_memory() {
+    use windows::Win32::System::Threading::{GetCurrentProcess, SetProcessWorkingSetSize};
+    unsafe {
+        let _ = SetProcessWorkingSetSize(GetCurrentProcess(), usize::MAX, usize::MAX);
+    }
+}
+
+/// Прямоугольник окна на экране (left, top, right, bottom), в физических пикселях.
+pub fn rect(hwnd: HWND) -> Option<(i32, i32, i32, i32)> {
+    use windows::Win32::Foundation::RECT;
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
+    let mut r = RECT::default();
+    unsafe { GetWindowRect(hwnd, &mut r).ok()? };
+    Some((r.left, r.top, r.right, r.bottom))
+}
+
+/// Положение курсора на экране, в физических пикселях.
+pub fn cursor() -> (i32, i32) {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+    let mut pt = POINT::default();
+    unsafe {
+        let _ = GetCursorPos(&mut pt);
+    }
+    (pt.x, pt.y)
+}
+
+/// Зажата ли основная кнопка мыши (с учётом настройки «поменять кнопки местами»).
+pub fn primary_button_down() -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_SWAPBUTTON};
+    let swapped = unsafe { GetSystemMetrics(SM_SWAPBUTTON) } != 0;
+    vk_down(if swapped { 0x02 } else { 0x01 })
+}
+
+/// Ставит окно в заданный прямоугольник (физические пиксели), не меняя порядок окон.
+pub fn place(hwnd: HWND, x: i32, y: i32, w: i32, h: i32) {
+    use windows::Win32::UI::WindowsAndMessaging::SWP_NOZORDER;
+    unsafe {
+        let _ = SetWindowPos(hwnd, None, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+}
+
+/// Меняет размер окна (физические пиксели), не трогая его положение и порядок.
+pub fn resize(hwnd: HWND, w: i32, h: i32) {
+    use windows::Win32::UI::WindowsAndMessaging::{SWP_NOMOVE, SWP_NOZORDER};
+    unsafe {
+        let _ = SetWindowPos(hwnd, None, 0, 0, w, h, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+}
+
 pub fn vk_down(vk: i32) -> bool {
     unsafe { (GetAsyncKeyState(vk) as u16 & 0x8000) != 0 }
 }

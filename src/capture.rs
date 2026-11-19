@@ -29,9 +29,17 @@ pub struct MonitorRect {
 
 /// Монитор, на котором сейчас находится курсор.
 pub fn monitor_under_cursor() -> MonitorRect {
+    let mut pt = POINT::default();
     unsafe {
-        let mut pt = POINT::default();
         let _ = GetCursorPos(&mut pt);
+    }
+    monitor_at(pt.x, pt.y)
+}
+
+/// Монитор, на который приходится точка экрана (физические пиксели).
+pub fn monitor_at(x: i32, y: i32) -> MonitorRect {
+    unsafe {
+        let pt = POINT { x, y };
         let mon: HMONITOR = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
         let mut info = MONITORINFO {
             cbSize: size_of::<MONITORINFO>() as u32,

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.0 — 2026-11-19
+
+### Added
+
+- **Pin on top.** The pin button or `Ctrl+P` keeps the selection as a small window above all others, right where it was captured. Drag to move, pull a corner or use the mouse wheel to resize (proportions are kept), `Ctrl+C` to copy, double-click, right click or `Esc` to close.
+- **QR code reader.** QR codes on the captured screen are found automatically: dark-on-light, light-on-dark and stylized ones with rounded dots and a logo in the middle. Each one is outlined as soon as the overlay opens and gets a label with its content; a click copies it. After a region is selected, only the codes inside it stay marked.
+- **Spotlight tool.** Drag one or more rectangles and everything around them is dimmed. The thickness buttons set how dark the rest gets.
+
+### Changed
+
+- **Less memory in the tray.** A few seconds after the last Glint window closes, unused memory is handed back to the system. Idle use in Task Manager drops from tens of megabytes to a few.
+
 ## 0.2.0 — 2026-11-18
 
 ### Added

@@ -51,6 +51,17 @@ fn icon_body(name: &str) -> Option<&'static str> {
         "blur" => {
             r#"<rect x="1.5" y="1.5" width="7" height="7" fill="black" stroke="none"/><rect x="8.5" y="1.5" width="7" height="7" fill="black" stroke="none" opacity=".4"/><rect x="15.5" y="1.5" width="7" height="7" fill="black" stroke="none"/><rect x="1.5" y="8.5" width="7" height="7" fill="black" stroke="none" opacity=".4"/><rect x="8.5" y="8.5" width="7" height="7" fill="black" stroke="none"/><rect x="15.5" y="8.5" width="7" height="7" fill="black" stroke="none" opacity=".4"/><rect x="1.5" y="15.5" width="7" height="7" fill="black" stroke="none"/><rect x="8.5" y="15.5" width="7" height="7" fill="black" stroke="none" opacity=".4"/><rect x="15.5" y="15.5" width="7" height="7" fill="black" stroke="none"/>"#
         }
+        // подсветка: яркий прямоугольник внутри приглушённого кадра
+        "spot" => {
+            r#"<rect x="2" y="4" width="20" height="16" rx="2" opacity=".45"/><rect x="7" y="8" width="10" height="8" rx="1" fill="black"/>"#
+        }
+        "pin" => {
+            r#"<path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/>"#
+        }
+        // три «глазка» с точкой внутри и россыпь модулей в четвёртом углу
+        "qr" => {
+            r#"<rect x="2.5" y="2.5" width="8" height="8" rx="2"/><rect x="13.5" y="2.5" width="8" height="8" rx="2"/><rect x="2.5" y="13.5" width="8" height="8" rx="2"/><rect x="5.4" y="5.4" width="2.2" height="2.2" rx=".5" fill="black" stroke="none"/><rect x="16.4" y="5.4" width="2.2" height="2.2" rx=".5" fill="black" stroke="none"/><rect x="5.4" y="16.4" width="2.2" height="2.2" rx=".5" fill="black" stroke="none"/><rect x="13" y="13" width="3.6" height="3.6" rx=".9" fill="black" stroke="none"/><rect x="18.6" y="13" width="3.4" height="3.4" rx=".9" fill="black" stroke="none" opacity=".55"/><rect x="13" y="18.6" width="3.4" height="3.4" rx=".9" fill="black" stroke="none" opacity=".55"/><rect x="18.4" y="18.4" width="3.6" height="3.6" rx=".9" fill="black" stroke="none"/>"#
+        }
         "ocr" => {
             r#"<path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 8h8"/><path d="M7 12h10"/><path d="M7 16h6"/>"#
         }
