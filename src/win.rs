@@ -29,10 +29,16 @@ pub fn hwnd_of(window: &Window) -> Option<HWND> {
 
 /// Превращает окно в безрамочное поверх всех окон в заданном прямоугольнике (физические пиксели).
 pub fn make_popup(hwnd: HWND, x: i32, y: i32, w: i32, h: i32, activate: bool) {
+    make_popup_as(hwnd, x, y, w, h, activate, activate);
+}
+
+/// То же, но отдельно задаётся, активировать ли окно сразу (`activate`) и может ли оно
+/// вообще получать фокус (`focusable`): окно можно показать без фокуса, а активировать позже.
+pub fn make_popup_as(hwnd: HWND, x: i32, y: i32, w: i32, h: i32, activate: bool, focusable: bool) {
     unsafe {
         SetWindowLongPtrW(hwnd, GWL_STYLE, WS_POPUP.0 as isize);
         let mut ex = WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOREDIRECTIONBITMAP;
-        if !activate {
+        if !focusable {
             ex |= WS_EX_NOACTIVATE;
         }
         SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex.0 as isize);
@@ -41,9 +47,17 @@ pub fn make_popup(hwnd: HWND, x: i32, y: i32, w: i32, h: i32, activate: bool) {
             flags |= SWP_NOACTIVATE;
         }
         let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), x, y, w, h, flags);
+        settle(hwnd, x, y, w, h);
         if activate {
             let _ = SetForegroundWindow(hwnd);
         }
+    }
+}
+
+/// Делает окно активным (ввод с клавиатуры пойдёт в него).
+pub fn activate(hwnd: HWND) {
+    unsafe {
+        let _ = SetForegroundWindow(hwnd);
     }
 }
 
@@ -187,6 +201,23 @@ pub fn place(hwnd: HWND, x: i32, y: i32, w: i32, h: i32) {
     unsafe {
         let _ = SetWindowPos(hwnd, None, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
     }
+    settle(hwnd, x, y, w, h);
+}
+
+/// Добивается, чтобы окно действительно заняло заданный прямоугольник.
+/// Когда окно переезжает на монитор с другим масштабом, система присылает WM_DPICHANGED
+/// с «предложенным» размером, и GPUI тут же применяет его поверх нашего. После переезда
+/// масштаб уже не меняется, поэтому повторная установка размера срабатывает как надо.
+fn settle(hwnd: HWND, x: i32, y: i32, w: i32, h: i32) {
+    use windows::Win32::UI::WindowsAndMessaging::SWP_NOZORDER;
+    for _ in 0..3 {
+        if rect(hwnd) == Some((x, y, x + w, y + h)) {
+            return;
+        }
+        unsafe {
+            let _ = SetWindowPos(hwnd, None, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+    }
 }
 
 /// Меняет размер окна (физические пиксели), не трогая его положение и порядок.
@@ -225,6 +256,7 @@ pub fn make_frameless(hwnd: HWND, x: i32, y: i32, w: i32, h: i32, visible: bool,
             flags |= SWP_NOACTIVATE;
         }
         let _ = SetWindowPos(hwnd, None, x, y, w, h, flags);
+        settle(hwnd, x, y, w, h);
         if visible && activate {
             let _ = SetForegroundWindow(hwnd);
         }

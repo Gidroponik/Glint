@@ -45,6 +45,8 @@ pub struct AppState {
     pub hotkeys_ok: (bool, bool),
     pub main: Option<WindowHandle<home::Home>>,
     pub overlay_open: bool,
+    /// Открытые оверлеи — по одному на монитор.
+    pub overlays: Vec<WindowHandle<overlay::Overlay>>,
 }
 
 impl Global for AppState {}
@@ -72,6 +74,7 @@ fn main() {
             hotkeys_ok: (true, true),
             main: None,
             overlay_open: false,
+            overlays: Vec::new(),
         });
         home::open(!hidden, cx);
         #[cfg(debug_assertions)]
@@ -177,95 +180,137 @@ fn open_overlay(cx: &mut App) -> Option<WindowHandle<overlay::Overlay>> {
         return None;
     }
     let t0 = std::time::Instant::now();
-    let mon = capture::monitor_under_cursor();
+    #[allow(unused_mut)]
+    let mut main = capture::monitor_under_cursor();
+    // Отладка: GLINT_MONPT=x,y — взять монитор по точке экрана, а не по курсору.
+    #[cfg(debug_assertions)]
+    if let Some(pt) = std::env::var("GLINT_MONPT").ok().and_then(|v| {
+        let (x, y) = v.split_once(',')?;
+        Some((x.trim().parse().ok()?, y.trim().parse().ok()?))
+    }) {
+        main = capture::monitor_at(pt.0, pt.1);
+        eprintln!("monitor: {main:?}, display: {:?}", display_for(&main, cx));
+    }
+    // Оверлей открывается на всех мониторах сразу: область можно выбрать на любом.
+    // Первым идёт монитор под курсором — он получает фокус. В отладочных прогонах
+    // (окно за пределами экрана) хватает одного монитора.
+    let offscreen = cfg!(debug_assertions) && std::env::var_os("GLINT_OFFSCREEN").is_some();
+    let mut monitors = vec![main];
+    // GLINT_ALLMON — и в отладочном прогоне открыть оверлеи всех мониторов (каждый за экраном)
+    if !offscreen || std::env::var_os("GLINT_ALLMON").is_some() {
+        monitors.extend(
+            capture::all_monitors().into_iter().filter(|m| (m.x, m.y) != (main.x, main.y)),
+        );
+    }
     let found = win::window_rects();
-    let Some(shot) = capture::capture_monitor(mon) else {
+    // Сначала снимаем все мониторы и только потом открываем окна, чтобы оверлей
+    // одного монитора не попал на снимок другого.
+    let shots: Vec<(MonitorRect, capture::Shot)> = monitors
+        .into_iter()
+        .filter_map(|m| capture::capture_monitor(m).map(|s| (m, s)))
+        .collect();
+    if shots.first().is_none_or(|(m, _)| (m.x, m.y) != (main.x, main.y)) {
         toast::show("Capture failed", "The screen is not available", false, cx);
         return None;
-    };
-    let t_capture = t0.elapsed();
-    #[allow(unused_mut)]
-    let mut shot = shot;
-    // Отладка: вместо экрана — цветная сетка, чтобы проверять отрисовку на тёмном экране.
-    #[cfg(debug_assertions)]
-    if std::env::var_os("GLINT_FAKESHOT").is_some() {
-        let w = shot.w as usize;
-        for (i, px) in shot.bgra.chunks_exact_mut(4).enumerate() {
-            let (x, y) = (i % w, i / w);
-            let grid = x % 60 < 2 || y % 60 < 2;
-            px.copy_from_slice(&[(x / 8) as u8, (y / 6) as u8, if grid { 40 } else { 230 }, 255]);
-        }
-        // GLINT_FAKEQR=<png> — картинка (например, QR-код), вставленная в этот «экран»
-        if let Some(pic) = std::env::var_os("GLINT_FAKEQR").and_then(|p| image::open(p).ok()) {
-            let pic = pic.to_rgba8();
-            for (x, y, c) in pic.enumerate_pixels() {
-                let o = ((450 + y as usize) * w + 900 + x as usize) * 4;
-                shot.bgra[o..o + 4].copy_from_slice(&[c[2], c[1], c[0], 255]);
-            }
-        }
     }
-    let (w, h, scale) = (shot.w, shot.h, shot.scale);
-    let buffer = image::RgbaImage::from_raw(w, h, shot.bgra)?;
-    // RenderImage хранит пиксели в BGRA — ровно то, что отдаёт GDI, без конвертации.
-    let image = Arc::new(RenderImage::new(vec![image::Frame::new(buffer)]));
-
-    // Окна на этом мониторе — в логических координатах оверлея, для выделения одним кликом.
-    let windows: Vec<shapes::R> = found
-        .into_iter()
-        .filter_map(|(l, t, r, b)| {
-            let (x0, y0) = ((l - mon.x).max(0), (t - mon.y).max(0));
-            let (x1, y1) = ((r - mon.x).min(w as i32), (b - mon.y).min(h as i32));
-            (x1 - x0 >= 40 && y1 - y0 >= 40).then(|| shapes::R {
-                x: x0 as f32 / scale,
-                y: y0 as f32 / scale,
-                w: (x1 - x0) as f32 / scale,
-                h: (y1 - y0) as f32 / scale,
-            })
-        })
-        .collect();
+    let t_capture = t0.elapsed();
 
     cx.global_mut::<AppState>().overlay_open = true;
-    let opened = cx.open_window(
-        WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(Bounds {
-                origin: point(px(mon.x as f32 / scale), px(mon.y as f32 / scale)),
-                size: size(px(w as f32 / scale), px(h as f32 / scale)),
-            })),
-            titlebar: Some(TitlebarOptions {
-                title: None,
-                appears_transparent: false,
-                traffic_light_position: None,
-            }),
-            focus: true,
-            show: false,
-            kind: WindowKind::PopUp,
-            is_movable: false,
-            is_resizable: false,
-            is_minimizable: false,
-            display_id: display_for(&mon, cx),
-            ..Default::default()
-        },
-        move |window, cx| {
-            let view = cx.new(|cx| overlay::Overlay::new(image, w, h, scale, windows, cx));
-            window.focus(&view.read(cx).focus_handle());
-            view
-        },
-    );
-    match &opened {
-        Ok(handle) => after_open(*handle, cx, move |hwnd| {
-            // Отладка: оверлей за пределами экрана и без активации (для снимка через PrintWindow).
-            if cfg!(debug_assertions) && std::env::var_os("GLINT_OFFSCREEN").is_some() {
-                win::make_popup(hwnd, -30000, mon.y, w as i32, h as i32, false);
-            } else {
-                win::make_popup(hwnd, mon.x, mon.y, w as i32, h as i32, true);
+    let mut handles = Vec::new();
+    for (index, (mon, shot)) in shots.into_iter().enumerate() {
+        #[allow(unused_mut)]
+        let mut shot = shot;
+        // Отладка: вместо экрана — цветная сетка, чтобы проверять отрисовку на тёмном экране.
+        #[cfg(debug_assertions)]
+        if std::env::var_os("GLINT_FAKESHOT").is_some() {
+            let w = shot.w as usize;
+            for (i, px) in shot.bgra.chunks_exact_mut(4).enumerate() {
+                let (x, y) = (i % w, i / w);
+                let grid = x % 60 < 2 || y % 60 < 2;
+                px.copy_from_slice(&[(x / 8) as u8, (y / 6) as u8, if grid { 40 } else { 230 }, 255]);
             }
-        }),
-        Err(_) => cx.global_mut::<AppState>().overlay_open = false,
+            // GLINT_FAKEQR=<png> — картинка (например, QR-код), вставленная в этот «экран»
+            if let Some(pic) = std::env::var_os("GLINT_FAKEQR").and_then(|p| image::open(p).ok()) {
+                let pic = pic.to_rgba8();
+                for (x, y, c) in pic.enumerate_pixels() {
+                    let o = ((450 + y as usize) * w + 900 + x as usize) * 4;
+                    shot.bgra[o..o + 4].copy_from_slice(&[c[2], c[1], c[0], 255]);
+                }
+            }
+        }
+        let (w, h, scale) = (shot.w, shot.h, shot.scale);
+        let Some(buffer) = image::RgbaImage::from_raw(w, h, shot.bgra) else { continue };
+        // RenderImage хранит пиксели в BGRA — ровно то, что отдаёт GDI, без конвертации.
+        let image = Arc::new(RenderImage::new(vec![image::Frame::new(buffer)]));
+
+        // Окна на этом мониторе — в логических координатах оверлея, для выделения одним кликом.
+        let windows: Vec<shapes::R> = found
+            .iter()
+            .filter_map(|&(l, t, r, b)| {
+                let (x0, y0) = ((l - mon.x).max(0), (t - mon.y).max(0));
+                let (x1, y1) = ((r - mon.x).min(w as i32), (b - mon.y).min(h as i32));
+                (x1 - x0 >= 40 && y1 - y0 >= 40).then(|| shapes::R {
+                    x: x0 as f32 / scale,
+                    y: y0 as f32 / scale,
+                    w: (x1 - x0) as f32 / scale,
+                    h: (y1 - y0) as f32 / scale,
+                })
+            })
+            .collect();
+
+        let first = index == 0;
+        let opened = cx.open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds {
+                    origin: point(px(mon.x as f32 / scale), px(mon.y as f32 / scale)),
+                    size: size(px(w as f32 / scale), px(h as f32 / scale)),
+                })),
+                titlebar: Some(TitlebarOptions {
+                    title: None,
+                    appears_transparent: false,
+                    traffic_light_position: None,
+                }),
+                focus: first,
+                show: false,
+                kind: WindowKind::PopUp,
+                is_movable: false,
+                is_resizable: false,
+                is_minimizable: false,
+                display_id: display_for(&mon, cx),
+                ..Default::default()
+            },
+            move |window, cx| {
+                let view = cx.new(|cx| overlay::Overlay::new(image, w, h, scale, windows, cx));
+                // при смене активного окна перерисовываем: лупа и перекрестие видны только в активном
+                view.update(cx, |_, cx| {
+                    cx.observe_window_activation(window, |_, _, cx| cx.notify()).detach();
+                });
+                if first {
+                    window.focus(&view.read(cx).focus_handle());
+                }
+                view
+            },
+        );
+        let Ok(handle) = opened else { continue };
+        after_open(handle, cx, move |hwnd| {
+            if offscreen {
+                // Отладка: оверлей за пределами экрана и без активации (для снимка через PrintWindow).
+                win::make_popup(hwnd, -30000 - index as i32 * 6000, mon.y, w as i32, h as i32, false);
+            } else {
+                // остальные мониторы показываются без фокуса и получают его, когда на них придёт мышь
+                win::make_popup_as(hwnd, mon.x, mon.y, w as i32, h as i32, first, true);
+            }
+        });
+        handles.push(handle);
     }
     if cfg!(debug_assertions) {
-        eprintln!("capture {t_capture:?}, overlay open {:?}", t0.elapsed());
+        eprintln!("capture {t_capture:?}, {} overlay(s) open {:?}", handles.len(), t0.elapsed());
     }
-    opened.ok()
+    let first = handles.first().copied();
+    let st = cx.global_mut::<AppState>();
+    st.overlay_open = first.is_some();
+    st.overlays = handles;
+    first
 }
 
 /// Отладочный прогон: GLINT_SELFTEST=<папка> открывает оверлей, рисует набор фигур

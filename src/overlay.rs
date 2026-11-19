@@ -167,6 +167,8 @@ struct Snap {
     anchor: usize,
     cursor: P,
     selecting: bool,
+    /// Окно активно: лупа и перекрестие рисуются только на том мониторе, где сейчас мышь.
+    active: bool,
     scale: f32,
 }
 
@@ -206,6 +208,7 @@ impl Overlay {
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
+                let scale = this.scale;
                 this.codes = found
                     .into_iter()
                     .map(|c| QrHit {
@@ -456,6 +459,35 @@ impl Overlay {
         }
     }
 
+    /// Приводит масштаб оверлея к фактическому масштабу окна. Они расходятся, если окно
+    /// оказалось на мониторе с другим DPI, чем ожидалось при создании; тогда всё, что уже
+    /// посчитано в логических координатах, пересчитывается.
+    fn sync_scale(&mut self, actual: f32) {
+        if actual <= 0.0 || (actual - self.scale).abs() < 0.001 {
+            return;
+        }
+        if cfg!(debug_assertions) {
+            eprintln!("overlay scale {} -> {actual}", self.scale);
+        }
+        let k = self.scale / actual;
+        let fix = |r: &mut R| {
+            r.x *= k;
+            r.y *= k;
+            r.w *= k;
+            r.h *= k;
+        };
+        self.windows.iter_mut().for_each(fix);
+        self.codes.iter_mut().for_each(|c| fix(&mut c.r));
+        if let Some(layer) = &mut self.ocr {
+            layer.words.iter_mut().for_each(|w| fix(&mut w.r));
+        }
+        if let Some(sel) = &mut self.sel {
+            fix(sel);
+        }
+        self.blurs.clear();
+        self.scale = actual;
+    }
+
     /// Область выделения в пикселях снимка.
     fn crop_of(&self, sel: &R) -> Crop {
         let s = self.scale;
@@ -609,6 +641,8 @@ impl Overlay {
     }
 
     fn on_down(&mut self, ev: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // работа началась на этом мониторе — оверлеи на остальных больше не нужны
+        self.dismiss_others(true, window, cx);
         window.focus(&self.focus);
         let q = pt(ev.position);
         self.cursor = q;
@@ -726,7 +760,15 @@ impl Overlay {
         cx.notify();
     }
 
-    fn on_move(&mut self, ev: &MouseMoveEvent, window: &Window, cx: &mut Context<Self>) {
+    fn on_move(&mut self, ev: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // мышь пришла на этот монитор — клавиатура тоже должна работать здесь
+        let offscreen = cfg!(debug_assertions) && std::env::var_os("GLINT_OFFSCREEN").is_some();
+        if !window.is_window_active() && !offscreen {
+            if let Some(hwnd) = win::hwnd_of(window) {
+                win::activate(hwnd);
+            }
+            window.focus(&self.focus);
+        }
         let q = pt(ev.position);
         self.cursor = q;
         let (ww, wh) = self.win_size();
@@ -1107,11 +1149,43 @@ impl Overlay {
         cx.notify();
     }
 
+    /// Закрывает оверлеи на остальных мониторах. `keep_self` оставляет в списке этот оверлей.
+    fn dismiss_others(&mut self, keep_self: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let me = window.window_handle().window_id();
+        let all = std::mem::take(&mut cx.global_mut::<AppState>().overlays);
+        let (mine, others): (Vec<_>, Vec<_>) = all.into_iter().partition(|h| h.window_id() == me);
+        if keep_self {
+            cx.global_mut::<AppState>().overlays = mine;
+        }
+        if others.is_empty() {
+            return;
+        }
+        cx.defer(move |cx| {
+            for handle in others {
+                let _ = handle.update(cx, |ov, window, _| ov.dismiss(window));
+            }
+        });
+    }
+
+    /// Тихо закрывает этот оверлей, не трогая состояние приложения: область выбрали на другом мониторе.
+    fn dismiss(&mut self, window: &mut Window) {
+        if self.closed {
+            return;
+        }
+        self.closed = true;
+        let _ = window.drop_image(self.image.clone());
+        for layer in self.blurs.drain(..) {
+            let _ = window.drop_image(layer.image);
+        }
+        window.remove_window();
+    }
+
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.closed {
             return;
         }
         self.closed = true;
+        self.dismiss_others(false, window, cx);
         let (color, width) = (self.color, self.width);
         let (text_weight, text_size, text_outline) =
             (self.text_weight, self.text_size, self.text_outline);
@@ -1162,7 +1236,7 @@ impl Overlay {
         }
     }
 
-    fn snapshot(&self) -> Snap {
+    fn snapshot(&self, active: bool) -> Snap {
         let mut shapes = self.shapes.clone();
         if let Some(cur) = &self.current {
             shapes.push(cur.clone());
@@ -1190,7 +1264,7 @@ impl Overlay {
             } else {
                 None
             },
-            hover: (self.sel.is_none() && matches!(self.drag, Drag::None))
+            hover: (active && self.sel.is_none() && matches!(self.drag, Drag::None))
                 .then(|| self.window_at(self.cursor))
                 .flatten(),
             sel: self.sel,
@@ -1201,6 +1275,7 @@ impl Overlay {
             anchor: self.anchor,
             cursor: self.cursor,
             selecting: self.sel.is_none() || matches!(self.drag, Drag::NewSel { .. }),
+            active,
             scale: self.scale,
         }
     }
@@ -1785,11 +1860,14 @@ impl Overlay {
 }
 
 impl Render for Overlay {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let entity = cx.entity();
+        self.sync_scale(window.scale_factor());
         self.ensure_blurs();
         self.ensure_ocr(cx);
-        let snap = self.snapshot();
+        // в отладочных прогонах окно за экраном не бывает активным — считаем его активным
+        let offscreen = cfg!(debug_assertions) && std::env::var_os("GLINT_OFFSCREEN").is_some();
+        let snap = self.snapshot(window.is_window_active() || offscreen);
         let pointer = if self.tool == Tool::Pick && self.sel.is_some() {
             CursorStyle::IBeam
         } else {
@@ -2386,13 +2464,13 @@ fn paint(snap: &Snap, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App)
             // Перекрестие до начала выделения.
             let line = color(0xFFFFFF, 0.35);
             let c = snap.cursor;
-            if c.x >= 0.0 && c.y >= 0.0 {
+            if snap.active && c.x >= 0.0 && c.y >= 0.0 {
                 window.paint_quad(fill(rect(&R { x: 0.0, y: c.y, w: ww, h: 1.0 }), line));
                 window.paint_quad(fill(rect(&R { x: c.x, y: 0.0, w: 1.0, h: wh }), line));
             }
         }
     }
-    if snap.selecting {
+    if snap.selecting && snap.active {
         paint_loupe(snap, ww, wh, window, cx);
     }
 }

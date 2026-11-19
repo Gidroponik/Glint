@@ -38,9 +38,31 @@ pub fn monitor_under_cursor() -> MonitorRect {
 
 /// Монитор, на который приходится точка экрана (физические пиксели).
 pub fn monitor_at(x: i32, y: i32) -> MonitorRect {
+    let mon = unsafe { MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONEAREST) };
+    monitor_rect(mon)
+}
+
+/// Все мониторы рабочего стола.
+pub fn all_monitors() -> Vec<MonitorRect> {
+    use windows::Win32::Foundation::LPARAM;
+    use windows::Win32::Graphics::Gdi::{EnumDisplayMonitors, HDC};
+    use windows::core::BOOL;
+
+    unsafe extern "system" fn each(mon: HMONITOR, _: HDC, _: *mut RECT, lp: LPARAM) -> BOOL {
+        unsafe {
+            (*(lp.0 as *mut Vec<MonitorRect>)).push(monitor_rect(mon));
+        }
+        true.into()
+    }
+    let mut out: Vec<MonitorRect> = Vec::new();
     unsafe {
-        let pt = POINT { x, y };
-        let mon: HMONITOR = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+        let _ = EnumDisplayMonitors(None, None, Some(each), LPARAM(&mut out as *mut _ as isize));
+    }
+    out
+}
+
+fn monitor_rect(mon: HMONITOR) -> MonitorRect {
+    unsafe {
         let mut info = MONITORINFO {
             cbSize: size_of::<MONITORINFO>() as u32,
             ..Default::default()

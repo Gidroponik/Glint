@@ -15,6 +15,7 @@ Get `glint.exe` from [Releases](https://github.com/Gidroponik/Glint/releases). N
 **Capture**
 
 - Region or full-screen capture. The screen is frozen while you select.
+- Works across several monitors: the overlay opens on all of them, each at its own scale, and you select on whichever you need.
 - Click a window to select it exactly; the window under the cursor is outlined.
 - A magnifier next to the cursor shows the pixels and the color under it, so the edge of a region can be set to the pixel.
 - The selection can be moved and resized after it is made.

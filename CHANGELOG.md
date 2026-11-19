@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.0 — 2026-11-19
+
+### Added
+
+- **All monitors at once.** The overlay now opens on every monitor, so a region can be selected on any of them no matter where the cursor was when the hotkey was pressed. The first click decides which monitor is being captured; the overlays on the others close.
+
+### Fixed
+
+- **Monitors with different scaling.** On a second monitor whose scale differs from the main one, the overlay could shrink and the copied region did not match the selection. The overlay now always fills the monitor it was opened on and follows that monitor's scale. The same fix applies to pinned captures and the settings window.
+
 ## 0.3.0 — 2026-11-19
 
 ### Added
