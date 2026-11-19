@@ -41,8 +41,8 @@ pub enum Action {
 
 pub struct AppState {
     pub settings: Settings,
-    /// Удалось ли зарегистрировать хоткеи: (область, весь экран).
-    pub hotkeys_ok: (bool, bool),
+    /// Как назначены хоткеи: (область, весь экран).
+    pub hotkeys: (hotkeys::Bound, hotkeys::Bound),
     pub main: Option<WindowHandle<home::Home>>,
     pub overlay_open: bool,
     /// Открытые оверлеи — по одному на монитор.
@@ -71,7 +71,7 @@ fn main() {
         fonts::register(cx);
         cx.set_global(AppState {
             settings,
-            hotkeys_ok: (true, true),
+            hotkeys: (hotkeys::Bound::Plain, hotkeys::Bound::Plain),
             main: None,
             overlay_open: false,
             overlays: Vec::new(),
@@ -126,9 +126,18 @@ fn handle_event(ev: hotkeys::Event, cx: &mut App) {
         hotkeys::Event::Quit => quit(cx),
         hotkeys::Event::Refresh => cx.refresh_windows(),
         hotkeys::Event::Status(region, full) => {
-            cx.global_mut::<AppState>().hotkeys_ok = (region, full);
+            cx.global_mut::<AppState>().hotkeys = (region, full);
             cx.refresh_windows();
         }
+        hotkeys::Event::Recorded(hk) => recorded(Some(hk), cx),
+        hotkeys::Event::RecordCancel => recorded(None, cx),
+    }
+}
+
+/// Передаёт главному окну нажатие, пойманное во время записи сочетания.
+fn recorded(hk: Option<settings::Hotkey>, cx: &mut App) {
+    if let Some(main) = cx.global::<AppState>().main {
+        let _ = main.update(cx, |home, _, cx| home.recorded(hk, cx));
     }
 }
 

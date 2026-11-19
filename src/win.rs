@@ -236,13 +236,6 @@ pub fn caps_lock_on() -> bool {
     unsafe { (GetKeyState(0x14) & 1) != 0 }
 }
 
-/// Первая нажатая клавиша, не являющаяся модификатором (для записи хоткея).
-pub fn pressed_key() -> Option<u32> {
-    (0x08u32..=0xDE).find(|&vk| {
-        !matches!(vk, 0x10..=0x12 | 0x14 | 0x5B | 0x5C | 0xA0..=0xA5) && vk_down(vk as i32)
-    })
-}
-
 /// Делает главное окно безрамочным (без системного заголовка), сохраняя его в панели задач.
 pub fn make_frameless(hwnd: HWND, x: i32, y: i32, w: i32, h: i32, visible: bool, activate: bool) {
     use windows::Win32::UI::WindowsAndMessaging::{SWP_NOZORDER, WS_MINIMIZEBOX, WS_SYSMENU};

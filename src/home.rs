@@ -77,10 +77,19 @@ pub fn open(visible: bool, cx: &mut App) {
                     hide(window);
                     false
                 });
-                cx.new(|cx| Home {
-                    focus: cx.focus_handle(),
-                    recording: None,
-                    record_error: false,
+                cx.new(|cx| {
+                    // Запись сочетания перехватывает всю клавиатуру — вне окна она не нужна.
+                    cx.observe_window_activation(window, |this: &mut Home, window, cx| {
+                        if !window.is_window_active() {
+                            this.stop_recording(cx);
+                        }
+                    })
+                    .detach();
+                    Home {
+                        focus: cx.focus_handle(),
+                        recording: None,
+                        record_error: false,
+                    }
                 })
             },
         )
@@ -131,46 +140,38 @@ impl Home {
         self.recording = Some(which);
         self.record_error = false;
         window.focus(&self.focus);
-        hotkeys::rebind(None, None);
+        hotkeys::record();
         cx.notify();
     }
 
     fn stop_recording(&mut self, cx: &mut Context<Self>) {
         if self.recording.take().is_some() {
             let s = &cx.global::<AppState>().settings;
-            hotkeys::rebind(Some(s.hotkey_region), Some(s.hotkey_full));
+            hotkeys::rebind(s.hotkey_region, s.hotkey_full);
             cx.notify();
         }
     }
 
-    fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(which) = self.recording else {
-            // Esc прячет окно в трей
-            if ev.keystroke.key == "escape" {
-                hide(window);
-            }
-            return;
-        };
-        cx.stop_propagation();
-        if ev.keystroke.key == "escape" {
+    fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, _cx: &mut Context<Self>) {
+        // Esc прячет окно в трей. Во время записи сочетания клавиши сюда не доходят:
+        // их целиком забирает перехват в `hotkeys`.
+        if self.recording.is_none() && ev.keystroke.key == "escape" {
+            hide(window);
+        }
+    }
+
+    /// Нажатие во время записи сочетания (`None` — запись отменена).
+    pub fn recorded(&mut self, hk: Option<Hotkey>, cx: &mut Context<Self>) {
+        let Some(which) = self.recording else { return };
+        let Some(hk) = hk else {
             self.stop_recording(cx);
             return;
-        }
-        let Some(vk) = win::pressed_key() else { return };
-        let m = ev.keystroke.modifiers;
-        let hk = Hotkey {
-            ctrl: m.control,
-            alt: m.alt,
-            shift: m.shift,
-            win: m.platform,
-            vk,
         };
-        let is_fn = (0x70..=0x87).contains(&vk);
         let other = {
             let s = &cx.global::<AppState>().settings;
             if which == Which::Region { s.hotkey_full } else { s.hotkey_region }
         };
-        if (!hk.ctrl && !hk.alt && !hk.win && !is_fn) || hk == other {
+        if !hk.usable() || hk == other {
             self.record_error = true;
             cx.notify();
             return;
@@ -212,22 +213,24 @@ impl Home {
         cx: &mut Context<Self>,
     ) -> Div {
         let st = cx.global::<AppState>();
-        let (hk, ok) = match which {
-            Which::Region => (st.settings.hotkey_region, st.hotkeys_ok.0),
-            Which::Full => (st.settings.hotkey_full, st.hotkeys_ok.1),
+        let (hk, bound) = match which {
+            Which::Region => (st.settings.hotkey_region, st.hotkeys.0),
+            Which::Full => (st.settings.hotkey_full, st.hotkeys.1),
         };
         let recording = self.recording == Some(which);
         let full = which == Which::Full;
 
         // Подпись появляется только когда есть что сообщить.
         let status: Option<(&'static str, u32)> = if recording && self.record_error {
-            Some(("Use Ctrl / Alt / Win + key", theme::WARN))
+            Some(("Add Ctrl, Alt or Win to this key", theme::WARN))
         } else if recording {
-            Some(("Press a shortcut · Esc cancels", theme::TEXT))
-        } else if !ok {
-            Some(("Shortcut is in use", theme::WARN))
+            Some(("Press any keys · Esc cancels", theme::TEXT))
         } else {
-            None
+            match bound {
+                hotkeys::Bound::Plain => None,
+                hotkeys::Bound::Override => Some(("Takes over the system shortcut", theme::MUTED)),
+                hotkeys::Bound::Failed => Some(("Shortcut is in use", theme::WARN)),
+            }
         };
 
         let keys = div()

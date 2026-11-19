@@ -23,6 +23,19 @@ impl Hotkey {
         }
     }
 
+    /// Годится ли сочетание как глобальное. Клавиши, которыми печатают и правят текст,
+    /// без Ctrl, Alt или Win назначать нельзя: иначе ими стало бы невозможно пользоваться.
+    pub fn usable(&self) -> bool {
+        if self.ctrl || self.alt || self.win {
+            return true;
+        }
+        !matches!(
+            self.vk,
+            0x08 | 0x09 | 0x0D | 0x1B | 0x20 | 0x25..=0x28 | 0x2E | 0x30..=0x39 | 0x41..=0x5A
+                | 0x60..=0x6F | 0xBA..=0xC0 | 0xDB..=0xDF | 0xE2
+        )
+    }
+
     pub fn parts(&self) -> Vec<String> {
         let mut v = Vec::new();
         if self.ctrl {
@@ -62,6 +75,22 @@ pub fn vk_name(vk: u32) -> String {
         0x27 => "→".into(),
         0x28 => "↓".into(),
         0x13 => "Pause".into(),
+        0x08 => "Backspace".into(),
+        0x1B => "Esc".into(),
+        0x5D => "Menu".into(),
+        0x90 => "NumLk".into(),
+        0x6A => "Num *".into(),
+        0x6B => "Num +".into(),
+        0x6D => "Num -".into(),
+        0x6E => "Num .".into(),
+        0x6F => "Num /".into(),
+        0xAD => "Mute".into(),
+        0xAE => "Vol-".into(),
+        0xAF => "Vol+".into(),
+        0xB0 => "Next".into(),
+        0xB1 => "Prev".into(),
+        0xB2 => "Stop".into(),
+        0xB3 => "Play".into(),
         0x91 => "ScrLk".into(),
         0xC0 => "`".into(),
         0xBD => "-".into(),
@@ -152,6 +181,27 @@ impl Default for Settings {
             text_size: 26.0,
             text_outline: false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bare_typing_keys_are_not_usable() {
+        let bare = |vk| Hotkey { ctrl: false, alt: false, shift: false, win: false, vk };
+        // Print Screen, Pause, F8, Insert — можно и без модификаторов
+        for vk in [0x2C, 0x13, 0x77, 0x2D] {
+            assert!(bare(vk).usable(), "{vk:#x}");
+        }
+        // буква, цифра, пробел, Enter, стрелка — нельзя, даже с Shift
+        for vk in [0x53, 0x31, 0x20, 0x0D, 0x25] {
+            assert!(!bare(vk).usable(), "{vk:#x}");
+            assert!(!Hotkey { shift: true, ..bare(vk) }.usable(), "{vk:#x}");
+            assert!(Hotkey { win: true, shift: true, ..bare(vk) }.usable(), "{vk:#x}");
+        }
+        assert_eq!(bare(0x2C).parts(), ["PrtSc"]);
     }
 }
 

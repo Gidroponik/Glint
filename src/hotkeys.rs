@@ -1,15 +1,23 @@
 //! Глобальные горячие клавиши и значок в трее.
 //! Живёт в отдельном потоке со своим циклом сообщений Win32 — не зависит от окон GPUI.
+//!
+//! Обычное сочетание регистрируется через `RegisterHotKey`. Если оно занято системой
+//! (Print Screen, Win+Shift+S) или другой программой, клавиши перехватывает низкоуровневый
+//! хук: пока сочетание назначено в Glint, до остальных оно не доходит. Хук ставится только
+//! когда нужен и ничего не меняет в настройках Windows — стоит сменить сочетание или
+//! закрыть Glint, и системное поведение возвращается само.
 
 use crate::settings::Hotkey;
 use async_channel::Sender;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, MOD_WIN, RegisterHotKey,
-    UnregisterHotKey,
+    HOT_KEY_MODIFIERS, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, MOD_ALT,
+    MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, MOD_WIN, RegisterHotKey, SendInput, UnregisterHotKey,
+    VIRTUAL_KEY,
 };
 use windows::Win32::UI::Shell::{
     NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_LARGE_ICON, NIIF_NOSOUND, NIIF_USER, NIIF_WARNING,
@@ -17,11 +25,13 @@ use windows::Win32::UI::Shell::{
     NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW, Shell_NotifyIconW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreateIcon, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu,
-    DispatchMessageW, GetCursorPos, GetMessageW, HICON, MF_SEPARATOR, MF_STRING, MSG,
+    AppendMenuW, CallNextHookEx, CreateIcon, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
+    DestroyMenu, DispatchMessageW, GetCursorPos, GetForegroundWindow, GetMessageW,
+    GetWindowThreadProcessId, HHOOK, HICON, KBDLLHOOKSTRUCT, MF_SEPARATOR, MF_STRING, MSG,
     PostThreadMessageW, RegisterClassW, RegisterWindowMessageW, SetForegroundWindow,
-    TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WINDOW_EX_STYLE,
-    WINDOW_STYLE, WM_APP, WM_HOTKEY, WM_LBUTTONUP, WM_RBUTTONUP, WNDCLASSW,
+    SetWindowsHookExW, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage,
+    UnhookWindowsHookEx, WH_KEYBOARD_LL, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_HOTKEY,
+    WM_KEYDOWN, WM_LBUTTONUP, WM_RBUTTONUP, WM_SYSKEYDOWN, WNDCLASSW,
 };
 use windows::core::{PCWSTR, w};
 
@@ -34,7 +44,22 @@ pub enum Event {
     /// Что-то изменилось снаружи (например, автозапуск из меню трея) — перерисовать окна.
     Refresh,
     /// Результат регистрации хоткеев: (область, весь экран).
-    Status(bool, bool),
+    Status(Bound, Bound),
+    /// Во время записи нового сочетания нажали клавишу.
+    Recorded(Hotkey),
+    /// Запись сочетания отменена (Esc или окно потеряло фокус).
+    RecordCancel,
+}
+
+/// Как назначено сочетание.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Bound {
+    /// Обычный системный хоткей.
+    Plain,
+    /// Сочетание занято системой или другой программой — Glint перехватывает его первым.
+    Override,
+    /// Назначить не удалось.
+    Failed,
 }
 
 const WM_TRAY: u32 = WM_APP + 1;
@@ -48,6 +73,27 @@ const ID_FULL: i32 = 2;
 
 static SENDER: OnceLock<Sender<Event>> = OnceLock::new();
 static PENDING: Mutex<(Option<Hotkey>, Option<Hotkey>)> = Mutex::new((None, None));
+/// Идёт запись нового сочетания: хук отдаёт приложению все нажатия.
+static RECORDING: AtomicBool = AtomicBool::new(false);
+static HOOK: Mutex<Hook> = Mutex::new(Hook { handle: 0, recording: false, binds: [None, None], held: 0 });
+
+/// Состояние перехвата клавиатуры.
+struct Hook {
+    /// Установленный хук (0 — не стоит).
+    handle: isize,
+    recording: bool,
+    /// Сочетания, которые ловит хук: область и весь экран.
+    binds: [Option<Hotkey>; 2],
+    /// Проглоченная клавиша: её повторы и отпускание тоже не пропускаем дальше.
+    held: u32,
+}
+
+const VK_PRINT_SCREEN: u32 = 0x2C;
+/// Ничем не занятая клавиша: её «нажатие» не даёт открыться меню «Пуск» или меню окна,
+/// когда основную клавишу сочетания с Win или Alt мы проглотили.
+const VK_MASK: u16 = 0xE8;
+/// Метка собственных искусственных нажатий, чтобы хук их не разбирал.
+const OWN_INPUT: usize = 0x476C_696E;
 static THREAD_ID: OnceLock<u32> = OnceLock::new();
 static NOTICE: Mutex<Option<(String, String, bool)>> = Mutex::new(None);
 static TASKBAR_CREATED: OnceLock<u32> = OnceLock::new();
@@ -79,6 +125,12 @@ pub fn already_running() -> bool {
 /// Запускает поток хоткеев/трея.
 pub fn start(tx: Sender<Event>, region: Hotkey, full: Hotkey) {
     let _ = SENDER.set(tx);
+    // Отладка: GLINT_HOOKTEST=<код клавиши в hex> — снимок области по этой клавише через хук.
+    #[cfg(debug_assertions)]
+    let region = std::env::var("GLINT_HOOKTEST")
+        .ok()
+        .and_then(|v| u32::from_str_radix(&v, 16).ok())
+        .map_or(region, |vk| Hotkey { ctrl: false, alt: false, shift: false, win: false, vk });
     *PENDING.lock().unwrap() = (Some(region), Some(full));
     std::thread::Builder::new()
         .name("glint-hotkeys".into())
@@ -86,9 +138,21 @@ pub fn start(tx: Sender<Event>, region: Hotkey, full: Hotkey) {
         .expect("hotkey thread");
 }
 
-/// Перерегистрирует хоткеи (None — временно отключить).
-pub fn rebind(region: Option<Hotkey>, full: Option<Hotkey>) {
-    *PENDING.lock().unwrap() = (region, full);
+/// Начинает запись нового сочетания: хоткеи отключаются, каждое нажатие приходит
+/// событием `Recorded` и дальше в систему не идёт. Заканчивается вызовом `rebind`.
+pub fn record() {
+    RECORDING.store(true, Ordering::SeqCst);
+    if let Some(tid) = THREAD_ID.get() {
+        unsafe {
+            let _ = PostThreadMessageW(*tid, WM_REBIND, WPARAM(0), LPARAM(0));
+        }
+    }
+}
+
+/// Назначает хоткеи заново и завершает запись сочетания, если она шла.
+pub fn rebind(region: Hotkey, full: Hotkey) {
+    RECORDING.store(false, Ordering::SeqCst);
+    *PENDING.lock().unwrap() = (Some(region), Some(full));
     if let Some(tid) = THREAD_ID.get() {
         unsafe {
             let _ = PostThreadMessageW(*tid, WM_REBIND, WPARAM(0), LPARAM(0));
@@ -147,6 +211,10 @@ fn register(id: i32, hk: Option<Hotkey>) -> bool {
     unsafe {
         let _ = UnregisterHotKey(None, id);
         let Some(hk) = hk else { return false };
+        // Print Screen система обрабатывает сама (буфер обмена, «Ножницы») — только перехват.
+        if hk.vk == VK_PRINT_SCREEN || force_hook() {
+            return false;
+        }
         let mut m = MOD_NOREPEAT;
         if hk.ctrl {
             m |= MOD_CONTROL;
@@ -164,11 +232,148 @@ fn register(id: i32, hk: Option<Hotkey>) -> bool {
     }
 }
 
+/// Отладка: все сочетания идут через хук.
+fn force_hook() -> bool {
+    cfg!(debug_assertions) && std::env::var_os("GLINT_HOOKTEST").is_some()
+}
+
 fn apply_bindings() {
-    let (r, f) = *PENDING.lock().unwrap();
-    let ok_r = register(ID_REGION, r);
-    let ok_f = register(ID_FULL, f);
-    send(Event::Status(ok_r, ok_f));
+    let recording = RECORDING.load(Ordering::SeqCst);
+    let (r, f) = if recording { (None, None) } else { *PENDING.lock().unwrap() };
+    // Что не удалось зарегистрировать обычным способом — перехватываем хуком.
+    let hooked = [(ID_REGION, r), (ID_FULL, f)].map(|(id, hk)| if register(id, hk) { None } else { hk });
+    let need = recording || hooked.iter().any(Option::is_some);
+    let installed = {
+        let mut h = HOOK.lock().unwrap();
+        h.recording = recording;
+        h.binds = hooked;
+        h.held = 0;
+        unsafe {
+            if need && h.handle == 0 {
+                let hinst = GetModuleHandleW(None).unwrap_or_default();
+                if let Ok(hook) = SetWindowsHookExW(WH_KEYBOARD_LL, Some(key_hook), Some(hinst.into()), 0) {
+                    h.handle = hook.0 as isize;
+                }
+            } else if !need && h.handle != 0 {
+                let _ = UnhookWindowsHookEx(HHOOK(h.handle as *mut _));
+                h.handle = 0;
+            }
+        }
+        h.handle != 0
+    };
+    if recording {
+        return;
+    }
+    let state = |hk: Option<Hotkey>| match hk {
+        None => Bound::Plain,
+        Some(_) if installed => Bound::Override,
+        Some(_) => Bound::Failed,
+    };
+    send(Event::Status(state(hooked[0]), state(hooked[1])));
+}
+
+fn remove_hook() {
+    let mut h = HOOK.lock().unwrap();
+    if h.handle != 0 {
+        unsafe {
+            let _ = UnhookWindowsHookEx(HHOOK(h.handle as *mut _));
+        }
+        h.handle = 0;
+    }
+}
+
+unsafe extern "system" fn key_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    unsafe {
+        if code == 0 {
+            let k = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
+            let down = matches!(wparam.0 as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
+            if k.dwExtraInfo != OWN_INPUT && on_hook_key(k.vkCode, down) {
+                return LRESULT(1);
+            }
+        }
+        CallNextHookEx(None, code, wparam, lparam)
+    }
+}
+
+/// Разбирает нажатие, пришедшее в хук. Возвращает true, если клавишу нужно проглотить.
+fn on_hook_key(vk: u32, down: bool) -> bool {
+    let mut h = HOOK.lock().unwrap();
+    if !down {
+        if h.held == vk {
+            h.held = 0;
+            return true;
+        }
+        return false;
+    }
+    // модификаторы и Caps Lock сами по себе сочетанием не считаются
+    if matches!(vk, 0x10..=0x12 | 0x14 | 0x5B | 0x5C | 0xA0..=0xA5) {
+        return false;
+    }
+    if h.held == vk {
+        return true; // автоповтор
+    }
+    let pressed = |vk: i32| crate::win::vk_down(vk);
+    let hk = Hotkey {
+        ctrl: pressed(0x11),
+        alt: pressed(0x12),
+        shift: pressed(0x10),
+        win: pressed(0x5B) || pressed(0x5C),
+        vk,
+    };
+    let ev = if h.recording {
+        if !own_window_active() {
+            // окно записи потеряло фокус — чужой ввод не трогаем
+            drop(h);
+            send(Event::RecordCancel);
+            return false;
+        }
+        if vk == 0x1B && !(hk.ctrl || hk.alt || hk.shift || hk.win) {
+            Event::RecordCancel
+        } else {
+            Event::Recorded(hk)
+        }
+    } else if h.binds[0] == Some(hk) {
+        Event::Region
+    } else if h.binds[1] == Some(hk) {
+        Event::Full
+    } else {
+        return false;
+    };
+    h.held = vk;
+    drop(h);
+    #[cfg(debug_assertions)]
+    eprintln!("hook: {ev:?}");
+    if hk.win || hk.alt {
+        mask_modifier();
+    }
+    send(ev);
+    true
+}
+
+/// Активное окно принадлежит нашему процессу.
+fn own_window_active() -> bool {
+    unsafe {
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(GetForegroundWindow(), Some(&mut pid));
+        pid == windows::Win32::System::Threading::GetCurrentProcessId()
+    }
+}
+
+fn mask_modifier() {
+    let key = |up: bool| INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: VIRTUAL_KEY(VK_MASK),
+                dwFlags: if up { KEYEVENTF_KEYUP } else { Default::default() },
+                dwExtraInfo: OWN_INPUT,
+                ..Default::default()
+            },
+        },
+    };
+    unsafe {
+        SendInput(&[key(false), key(true)], size_of::<INPUT>() as i32);
+    }
 }
 
 fn run() {
@@ -221,6 +426,7 @@ fn run() {
                 }
             }
         }
+        remove_hook();
         remove_tray(hwnd);
     }
 }

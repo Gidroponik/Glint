@@ -44,7 +44,8 @@ Get `glint.exe` from [Releases](https://github.com/Gidroponik/Glint/releases). N
 
 **App**
 
-- Global hotkeys that can be rebound, tray icon, optional start with Windows.
+- Global hotkeys on any keys, including `PrtSc` and `Win+Shift+S`: Glint takes them over from Snipping Tool while they are assigned to it.
+- Tray icon, optional start with Windows.
 - One executable, no installer.
 
 See [CHANGELOG.md](CHANGELOG.md) for what changed between versions.
@@ -75,6 +76,12 @@ See [CHANGELOG.md](CHANGELOG.md) for what changed between versions.
 | **×** | Hides the window to the tray. Glint keeps running. |
 
 Drag the header to move the window.
+
+### Recording a shortcut
+
+Click the key caps and press the keys. Any combination works, and keys such as `PrtSc`, `Pause`, `Insert` or `F8` can be used on their own; letters, digits and other typing keys need Ctrl, Alt or Win.
+
+If Windows or another program already uses the shortcut (`PrtSc`, `Alt+PrtSc`, `Win+Shift+S`), Glint takes it over and shows *Takes over the system shortcut*. Nothing is changed in Windows settings: assign a different shortcut or quit Glint, and the system shortcut works again.
 
 ## Shortcuts
 

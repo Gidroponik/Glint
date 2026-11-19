@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.0 — 2026-11-19
+
+### Added
+
+- **Any key as a shortcut.** Shortcuts are no longer limited to Ctrl / Alt / Win combinations: `PrtSc`, `Pause`, `Insert`, function and media keys work on their own. Only keys used for typing still need a modifier.
+- **Priority over Windows shortcuts.** A shortcut that Windows or another program already uses — `PrtSc`, `Alt+PrtSc`, `Win+Shift+S` — can be assigned to Glint. While it is assigned, Glint receives the keys first and Snipping Tool does not open. No Windows setting is changed: pick another shortcut or quit Glint and the system one works as before.
+
 ## 0.4.0 — 2026-11-19
 
 ### Added
