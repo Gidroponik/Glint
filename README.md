@@ -48,6 +48,14 @@ Get `glint.exe` from [Releases](https://github.com/Gidroponik/Glint/releases). N
 
 See [CHANGELOG.md](CHANGELOG.md) for what changed between versions.
 
+## At a glance
+
+| | | |
+| :---: | :---: | :---: |
+| <img src="docs/features/select.webp" width="260" alt="Select"><br>**Select**<br>Freeze the screen and drag a region, or click a window. | <img src="docs/features/draw.webp" width="260" alt="Draw"><br>**Draw**<br>Pen, marker, lines, arrows and shapes. Shaky strokes clean themselves up. | <img src="docs/features/text.webp" width="260" alt="Type"><br>**Type**<br>Montserrat in six weights, with an outline for any background. |
+| <img src="docs/features/blur.webp" width="260" alt="Blur"><br>**Blur**<br>Hide what is private. | <img src="docs/features/spotlight.webp" width="260" alt="Spotlight"><br>**Spotlight**<br>Dim everything except what matters. | <img src="docs/features/livetext.webp" width="260" alt="Live text"><br>**Live text**<br>Select and copy text right on the capture. |
+| <img src="docs/features/qr.webp" width="260" alt="QR codes"><br>**QR codes**<br>Found automatically, one click to copy. | <img src="docs/features/pin.webp" width="260" alt="Pin on top"><br>**Pin on top**<br>Keep a capture above other windows while you work. | <img src="docs/features/copy.webp" width="260" alt="Copy or save"><br>**Copy or save**<br>Clipboard and file in PNG, PNG-8, JPEG or WebP. |
+
 ## Menu
 
 <img src="docs/menu.png" width="320" alt="Glint menu">
